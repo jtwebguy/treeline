@@ -52,7 +52,7 @@ function makeNeedleTexture() {
         const l = len * (0.55 + r() * 0.5) * (1 - t * 0.35);
         const h = 95 + r() * 25, s = 25 + r() * 25, li = 13 + r() * 16;
         g.strokeStyle = `hsl(${h},${s}%,${li}%)`;
-        g.lineWidth = 2.2 + r() * 1.2;
+        g.lineWidth = 2.6 + r() * 1.4;
         g.beginPath();
         g.moveTo(px, py);
         g.quadraticCurveTo(px + Math.cos(a) * l * 0.5, py + Math.sin(a) * l * 0.5 - 4, px + Math.cos(a) * l, py + Math.sin(a) * l);
@@ -63,13 +63,13 @@ function makeNeedleTexture() {
 
   // main shoot (bottom-centre up) plus side shoots
   const sx = S / 2, sy = S - 6, ex = S / 2 + 8, ey = 30;
-  for (let k = 0; k < 7; k++) {
-    const t = 0.15 + k * 0.11;
+  for (let k = 0; k < 9; k++) {
+    const t = 0.12 + k * 0.09;
     const bx = sx + (ex - sx) * t, by = sy + (ey - sy) * t;
     const side = k % 2 ? 1 : -1;
     const a = -Math.PI / 2 + side * (0.55 + r() * 0.3);
     const L = 120 + r() * 70;
-    needles(bx, by, bx + Math.cos(a) * L, by + Math.sin(a) * L, 70, 16);
+    needles(bx, by, bx + Math.cos(a) * L, by + Math.sin(a) * L, 85, 22);
   }
   needles(sx, sy, ex, ey, 85, 34);
 
@@ -156,32 +156,32 @@ function buildPine(seed, kind) {
 
   if (kind !== 'snapped') {
     const crownStart = H * (0.52 + r() * 0.14);
-    const n = kind === 'burnt' ? 10 + Math.floor(r() * 6) : 16 + Math.floor(r() * 9);
+    const n = kind === 'burnt' ? 8 + Math.floor(r() * 7) : 22 + Math.floor(r() * 10);
     for (let i = 0; i < n; i++) {
       const rel = Math.pow(i / n, 0.85);
       const y = crownStart + (H - crownStart - 0.6) * rel + (r() - 0.5) * 0.5;
       const yaw = i * 2.39996 + r() * 0.6;
-      const tilt = 0.05 + rel * 0.75 + (r() - 0.5) * 0.25;
+      const tilt = kind === 'burnt' ? (r() - 0.35) * 1.4 : 0.05 + rel * 0.75 + (r() - 0.5) * 0.25;
       const dir = new THREE.Vector3(Math.cos(yaw) * Math.cos(tilt), Math.sin(tilt), Math.sin(yaw) * Math.cos(tilt)).normalize();
       let len = (0.9 + 2.6 * Math.pow(1 - rel, 0.6)) * (0.7 + r() * 0.45);
-      if (kind === 'burnt') len *= 0.35 + r() * 0.7; // broken, burnt-off limbs
+      if (kind === 'burnt') { if (r() < 0.35) continue; len *= 0.15 + r() * 0.55; } // broken, burnt-off limbs
       const start = bendAt(bend, y, H);
       wood.push(branchGeo(start, dir, len, 0.035 + (1 - rel) * 0.05, kind === 'burnt'));
 
       const keep = kind === 'burnt' ? r() < 0.3 : true;
       if (!keep) continue;
-      const clusters = kind === 'burnt' ? 1 : 2 + Math.floor(len / 1.1);
+      const clusters = kind === 'burnt' ? 1 : 3 + Math.floor(len / 0.8);
       for (let k = 0; k < clusters; k++) {
         const t = 0.3 + (0.7 * (k + 1)) / clusters;
         const pos = start.clone().addScaledVector(dir, len * t);
-        const cdir = dir.clone().addScaledVector(UP, 0.7).add(new THREE.Vector3(r() - 0.5, r() - 0.5, r() - 0.5).multiplyScalar(0.5)).normalize();
-        cardCluster(foliage, pos, cdir, 1.0 + r() * 0.7, r);
+        const cdir = dir.clone().addScaledVector(UP, 0.45).add(new THREE.Vector3(r() - 0.5, r() - 0.5, r() - 0.5).multiplyScalar(0.5)).normalize();
+        cardCluster(foliage, pos, cdir, kind === 'burnt' ? 1.0 + r() * 0.6 : 1.5 + r() * 0.9, r);
       }
     }
     if (kind !== 'burnt') {
       const top = bendAt(bend, H - 0.4, H);
-      cardCluster(foliage, top, UP.clone(), 1.6, r);
-      cardCluster(foliage, top.clone().add(new THREE.Vector3(0, -0.6, 0)), new THREE.Vector3(0.4, 1, 0.2).normalize(), 1.3, r);
+      cardCluster(foliage, top, UP.clone(), 2.2, r);
+      cardCluster(foliage, top.clone().add(new THREE.Vector3(0, -0.6, 0)), new THREE.Vector3(0.4, 1, 0.2).normalize(), 1.9, r);
     }
   }
 
@@ -253,7 +253,7 @@ export function createForest() {
       if (!isBuildable(x, z)) continue;
 
       const roll = r();
-      const kind = roll < dmg * 0.42 ? 'snapped' : roll < dmg * 0.95 ? 'burnt' : 'healthy';
+      const kind = roll < dmg * 0.32 ? 'snapped' : roll < dmg * 0.7 ? 'burnt' : 'healthy';
       const pool = byKind(kind);
       const v = pool[Math.floor(r() * pool.length)];
       const s = 0.85 + r() * 0.3;
