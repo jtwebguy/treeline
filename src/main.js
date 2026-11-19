@@ -14,7 +14,7 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.85;
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap;
 document.body.prepend(renderer.domElement);
 setMaxAniso(Math.min(8, renderer.capabilities.getMaxAnisotropy()));
 
@@ -96,9 +96,36 @@ const keys = {};
 addEventListener('keydown', (e) => { keys[e.code] = true; if (e.code === 'Space') e.preventDefault(); });
 addEventListener('keyup', (e) => { keys[e.code] = false; });
 
-ui.start.addEventListener('click', () => { controls.lock(); effects.startAudio(); });
-controls.addEventListener('lock', () => { ui.overlay.classList.add('hidden'); ui.hud.classList.remove('hidden'); });
-controls.addEventListener('unlock', () => { ui.overlay.classList.remove('hidden'); ui.hud.classList.add('hidden'); ui.start.textContent = 'Resume'; });
+// Playing does not depend on pointer lock: if the browser refuses the lock
+// (iframes, some embedded browsers) you can still drag with the mouse to look.
+let playing = false;
+const setPlaying = (on) => {
+  playing = on;
+  ui.overlay.classList.toggle('hidden', on);
+  ui.hud.classList.toggle('hidden', !on);
+  if (!on) ui.start.textContent = 'Resume';
+};
+ui.start.addEventListener('click', () => {
+  effects.startAudio();
+  setPlaying(true);
+  try { const p = controls.lock(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* drag-look fallback */ }
+});
+let lockedOnce = false;
+controls.addEventListener('lock', () => { lockedOnce = true; setPlaying(true); });
+controls.addEventListener('unlock', () => setPlaying(false));
+addEventListener('keydown', (e) => { if (e.code === 'Escape' && playing && !controls.isLocked) setPlaying(false); });
+
+const euler = new THREE.Euler(0, 0, 0, 'YXZ');
+let dragging = false;
+renderer.domElement.addEventListener('mousedown', () => { if (playing && !controls.isLocked) dragging = true; });
+addEventListener('mouseup', () => { dragging = false; });
+addEventListener('mousemove', (e) => {
+  if (!dragging) return;
+  euler.setFromQuaternion(camera.quaternion);
+  euler.y -= e.movementX * 0.003;
+  euler.x = THREE.MathUtils.clamp(euler.x - e.movementY * 0.003, -1.5, 1.5);
+  camera.quaternion.setFromEuler(euler);
+});
 
 // tree collision grid
 const CELL = 8, grid = new Map();
@@ -157,20 +184,23 @@ function updatePlayer(dt) {
 }
 
 // ------------------------------------------------------------------ loop
-const clock = new THREE.Clock();
+const clock = new THREE.Timer();
 const fpsEl = document.getElementById('fps');
 let frames = 0, fpsT = 0;
 renderer.setAnimationLoop(() => {
+  clock.update();
   const dt = Math.min(0.05, clock.getDelta());
-  const t = clock.elapsedTime;
+  const t = clock.getElapsed();
   windUniform.value = t;
-  if (controls.isLocked) updatePlayer(dt);
+  if (playing) updatePlayer(dt);
   else { sun.target.position.copy(player.pos); sun.position.copy(player.pos).addScaledVector(SUN_DIR, 120); }
   effects.update(dt, t, camera.position);
   renderer.render(scene, camera);
   frames++; fpsT += dt;
   if (fpsT > 0.5) { fpsEl.textContent = `${Math.round(frames / fpsT)} fps`; frames = 0; fpsT = 0; }
 });
+
+window.game = { scene, camera, player, renderer, forest };  // handy for debugging in the console
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
