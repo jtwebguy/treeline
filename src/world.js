@@ -94,7 +94,7 @@ export function sample(x, z) {
 
   // big scorched patches from fires
   const n = perlin.noise(x * 0.018, z * 0.018, 7.7) + perlin.noise(x * 0.07, z * 0.07, 9.1) * 0.35;
-  burn = Math.max(burn, smoothstep(0.12, 0.42, n));
+  burn = Math.max(burn, smoothstep(0.22, 0.5, n));
 
   return { h, burn, mud, trench: dt };
 }
