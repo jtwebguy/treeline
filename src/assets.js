@@ -8,6 +8,9 @@ const PH = 'https://dl.polyhaven.org/file/ph-assets';
 const RES = '1k';
 
 export const manager = new THREE.LoadingManager();
+// Poly Haven glTFs reference "textures/x.jpg", but the CDN keeps model
+// textures under Models/jpg/<res>/<id>/ — rewrite those requests.
+manager.setURLModifier((url) => url.replace(/\/Models\/gltf\/(\w+)\/([^/]+)\/textures\//, '/Models/jpg/$1/$2/'));
 const texLoader = new THREE.TextureLoader(manager);
 const gltfLoader = new GLTFLoader(manager);
 const hdrLoader = new HDRLoader(manager);
