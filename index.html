@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Лісосмуга — Treeline</title>
+  <style>
+    :root { --fg: #e8e4dc; --dim: #9c978d; --accent: #d9b44a; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1c1b; color: var(--fg);
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif; }
+    canvas { display: block; }
+    #vignette { position: fixed; inset: 0; pointer-events: none;
+      background: radial-gradient(ellipse at center, transparent 55%, rgba(10,8,6,.55) 100%); }
+    #overlay { position: fixed; inset: 0; display: grid; place-items: center;
+      background: rgba(18,18,16,.72); backdrop-filter: blur(3px); transition: opacity .3s; }
+    #overlay.hidden { opacity: 0; pointer-events: none; }
+    .card { width: min(460px, calc(100% - 32px)); padding: 32px; }
+    h1 { margin: 0; font-size: 44px; letter-spacing: .04em; font-weight: 700; }
+    h1 small { display: block; font-size: 14px; font-weight: 500; letter-spacing: .35em; color: var(--dim); text-transform: uppercase; margin-top: 6px; }
+    .track { height: 3px; background: rgba(255,255,255,.12); margin: 28px 0 8px; }
+    #bar { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+    #status { font-size: 13px; color: var(--dim); min-height: 18px; }
+    button { margin-top: 24px; width: 100%; padding: 14px; font: inherit; font-weight: 600; letter-spacing: .05em;
+      color: #1b1c1b; background: var(--accent); border: 0; cursor: pointer; }
+    button:disabled { background: #555; color: #999; cursor: wait; }
+    .keys { margin-top: 22px; display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 13px; color: var(--dim); }
+    kbd { font: 12px ui-monospace, monospace; color: var(--fg); border: 1px solid #555; padding: 1px 6px; border-radius: 3px; }
+    .credit { margin-top: 22px; font-size: 11px; color: #77736b; }
+    .credit a { color: inherit; }
+    #hud { position: fixed; inset: 0; pointer-events: none; }
+    #hud.hidden { display: none; }
+    #dot { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px; border-radius: 50%; background: rgba(255,255,255,.6); }
+    #fps { position: absolute; right: 12px; top: 10px; font: 11px ui-monospace, monospace; color: rgba(255,255,255,.45); }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.187.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="vignette"></div>
+  <div id="hud" class="hidden"><div id="dot"></div><div id="fps"></div></div>
+  <div id="overlay">
+    <div class="card">
+      <h1>Лісосмуга<small>Treeline</small></h1>
+      <div class="track"><div id="bar"></div></div>
+      <div id="status">Generating forest…</div>
+      <button id="start" disabled>Loading…</button>
+      <div class="keys">
+        <kbd>WASD</kbd><span>Move</span>
+        <kbd>Shift</kbd><span>Run</span>
+        <kbd>C</kbd><span>Crouch</span>
+        <kbd>Space</kbd><span>Jump</span>
+        <kbd>Esc</kbd><span>Pause</span>
+      </div>
+      <div class="credit">Textures, models &amp; HDRI: CC0 from <a href="https://polyhaven.com" target="_blank" rel="noopener">Poly Haven</a>. Engine: three.js.</div>
+    </div>
+  </div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
