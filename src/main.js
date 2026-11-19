@@ -217,8 +217,8 @@ renderer.setAnimationLoop(() => {
   const dt = Math.min(0.05, clock.getDelta());
   const t = clock.getElapsed();
   windUniform.value = t;
-  if (playing) updatePlayer(dt);
   controls.pointerSpeed = camera.fov / 70; // slower look while zoomed
+  if (playing) updatePlayer(dt);
   else { sun.target.position.copy(player.pos); sun.position.copy(player.pos).addScaledVector(SUN_DIR, 120); }
   effects.update(dt, t, camera.position);
   weapons.update(dt, t, {
