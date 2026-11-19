@@ -5,6 +5,7 @@ import { createTerrain } from './terrain.js';
 import { createForest, windUniform } from './trees.js';
 import { createProps } from './props.js';
 import { Effects } from './effects.js';
+import { Weapons } from './weapons.js';
 import { HALF, TRENCH, heightAt } from './world.js';
 
 // ------------------------------------------------------------------ renderer
@@ -15,6 +16,7 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.85;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.autoClear = false; // world pass, then the weapon pass on top
 document.body.prepend(renderer.domElement);
 setMaxAniso(Math.min(8, renderer.capabilities.getMaxAnisotropy()));
 
@@ -48,6 +50,8 @@ loadHDRI('kloofendal_overcast_puresky').then((hdr) => {
   scene.background = hdr;
   scene.backgroundIntensity = 0.55;
   scene.backgroundBlurriness = 0.15;
+  weapons.vmScene.environment = hdr;
+  weapons.vmScene.environmentIntensity = 0.5;
 }).catch(() => {});
 
 // ------------------------------------------------------------------ world
@@ -57,6 +61,10 @@ const ui = {
   status: document.getElementById('status'),
   start: document.getElementById('start'),
   hud: document.getElementById('hud'),
+  weapon: document.getElementById('weapon'),
+  ammo: document.getElementById('ammo'),
+  scope: document.getElementById('scope'),
+  dot: document.getElementById('dot'),
 };
 const failures = [];
 
@@ -64,6 +72,7 @@ scene.add(createTerrain());
 const forest = createForest();
 scene.add(forest.group);
 const effects = new Effects(scene, { hemi, fog: scene.fog });
+const weapons = new Weapons({ camera, scene, renderer, effects, colliders: forest.colliders, ui });
 createProps(forest.snappedSpots, (id) => failures.push(id)).then((g) => scene.add(g));
 
 manager.onProgress = (url, done, total) => {
@@ -75,7 +84,7 @@ manager.onLoad = () => {
   ui.bar.style.width = '100%';
   ui.status.textContent = failures.length
     ? `Ready (${failures.length} asset${failures.length > 1 ? 's' : ''} failed to load)`
-    : `Ready — ${forest.count.toLocaleString()} trees`;
+    : `Ready — ${forest.count.toLocaleString()} trees (${forest.counts.birch} birch, ${forest.counts.young} young pines, ${forest.clumps.length} thickets)`;
   ui.start.disabled = false;
   ui.start.textContent = 'Enter the forest';
 };
@@ -117,9 +126,23 @@ addEventListener('keydown', (e) => { if (e.code === 'Escape' && playing && !cont
 
 const euler = new THREE.Euler(0, 0, 0, 'YXZ');
 let dragging = false;
-renderer.domElement.addEventListener('mousedown', () => { if (playing && !controls.isLocked) dragging = true; });
-addEventListener('mouseup', () => { dragging = false; });
+// Mouse: left fires, right aims. Without pointer lock, left-drag looks and F fires.
+renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+renderer.domElement.addEventListener('mousedown', (e) => {
+  if (!playing) return;
+  if (controls.isLocked || e.button === 2) weapons.onMouseDown(e.button);
+  else if (e.button === 0) dragging = true;
+});
+addEventListener('mouseup', (e) => { dragging = false; weapons.onMouseUp(e.button); });
+addEventListener('wheel', () => { if (playing) weapons.cycle(); });
+addEventListener('keydown', (e) => {
+  if (!playing) return;
+  weapons.onKey(e.code);
+  if (e.code === 'KeyF') weapons.onMouseDown(0);
+});
+addEventListener('keyup', (e) => { if (e.code === 'KeyF') weapons.onMouseUp(0); });
 addEventListener('mousemove', (e) => {
+  if (playing && (controls.isLocked || dragging)) weapons.onMouseMove(e.movementX, e.movementY);
   if (!dragging) return;
   euler.setFromQuaternion(camera.quaternion);
   euler.y -= e.movementX * 0.003;
@@ -153,7 +176,9 @@ function updatePlayer(dt) {
   if (keys.KeyD || keys.ArrowRight) wish.add(right);
   if (keys.KeyA || keys.ArrowLeft) wish.sub(right);
   const crouch = keys.KeyC || keys.ControlLeft;
-  const speed = crouch ? 1.8 : keys.ShiftLeft || keys.ShiftRight ? 6.8 : 3.6;
+  const sprinting = !crouch && !weapons.aiming && (keys.ShiftLeft || keys.ShiftRight) && (keys.KeyW || keys.ArrowUp);
+  const speed = (crouch ? 1.8 : sprinting ? 6.8 : 3.6) * (weapons.aiming ? 0.55 : 1);
+  player.sprinting = sprinting;
   if (wish.lengthSq()) wish.normalize().multiplyScalar(speed);
 
   const accel = player.onGround ? 12 : 2;
@@ -193,14 +218,22 @@ renderer.setAnimationLoop(() => {
   const t = clock.getElapsed();
   windUniform.value = t;
   if (playing) updatePlayer(dt);
+  controls.pointerSpeed = camera.fov / 70; // slower look while zoomed
   else { sun.target.position.copy(player.pos); sun.position.copy(player.pos).addScaledVector(SUN_DIR, 120); }
   effects.update(dt, t, camera.position);
+  weapons.update(dt, t, {
+    moving: playing && player.onGround && Math.hypot(player.vel.x, player.vel.z) > 0.5,
+    sprinting: playing && player.sprinting,
+    aspect: camera.aspect,
+  });
+  renderer.clear();
   renderer.render(scene, camera);
+  if (playing) weapons.render();
   frames++; fpsT += dt;
   if (fpsT > 0.5) { fpsEl.textContent = `${Math.round(frames / fpsT)} fps`; frames = 0; fpsT = 0; }
 });
 
-window.game = { scene, camera, player, renderer, forest };  // handy for debugging in the console
+window.game = { scene, camera, player, renderer, forest, weapons };  // handy for debugging in the console
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
