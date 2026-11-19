@@ -35,7 +35,7 @@ export const TRENCH = [];
   }
 }
 export const TRENCH_WIDTH = 1.05;   // half-width of the cut
-export const TRENCH_DEPTH = 1.9;
+export const TRENCH_DEPTH = 1.35; // standing eye-line just clears the parapet
 
 function distToTrench(x, z) {
   let best = 1e9;
@@ -88,7 +88,7 @@ export function sample(x, z) {
   if (dt < 4) {
     const cut = 1 - smoothstep(TRENCH_WIDTH * 0.7, TRENCH_WIDTH, dt);
     h -= TRENCH_DEPTH * cut;
-    h += 0.55 * Math.exp(-Math.pow((dt - 1.9) / 0.6, 2)); // spoil bank
+    h += 0.3 * Math.exp(-Math.pow((dt - 1.9) / 0.6, 2)); // spoil bank
     mud = Math.max(mud, 1 - smoothstep(1.2, 3.2, dt));
   }
 
