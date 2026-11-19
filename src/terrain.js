@@ -60,6 +60,7 @@ export function createTerrain() {
         // anti-tiling: blend a rotated, larger-scale sample of the base layer
         vec2 gUv2 = mat2(0.8, -0.6, 0.6, 0.8) * gUv * 0.37 + 0.21;
         vec4 c0 = mix(texture2D(map, gUv), texture2D(map, gUv2), 0.45);
+        c0.rgb = mix(c0.rgb, vec3(dot(c0.rgb, vec3(0.3, 0.59, 0.11))), 0.4) * vec3(0.9, 0.86, 0.78); // drab, late-autumn
         vec4 c1 = texture2D(tBurn, gUv * 0.85 + 0.5);
         vec4 c2 = texture2D(tMud, gUv * 0.9);
         // height-aware blend so transitions break up along texture detail
