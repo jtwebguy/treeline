@@ -15,7 +15,7 @@ const DEFS = {
   m4: {
     name: 'M4A1', file: './models/vm_m4.glb',
     hip: new THREE.Vector3(0.085, -0.075, -0.2), hipYaw: 3 * D2R,
-    ads: new THREE.Vector3(0, 0, -0.085), adsFov: 52,
+    ads: new THREE.Vector3(0, 0, -0.14), adsFov: 52,
     muzzle: new THREE.Vector3(0, -0.062, -0.57),
     auto: true, interval: 60 / 750, mag: 30, reserve: 150, reload: 2.3,
     kick: 0.9, camKick: 0.006, spread: 0.0025, hipSpread: 0.018,

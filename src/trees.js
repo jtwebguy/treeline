@@ -296,13 +296,13 @@ function buildBirch(seed) {
     colorize(b, () => [0.22, 0.18, 0.16]);
     wood.push(b);
     // weeping twig curtains hang from the outer half of each limb
-    const curt = 2 + Math.floor(len / 0.7);
+    const curt = 3 + Math.floor(len / 0.5);
     for (let k = 0; k < curt; k++) {
       const pos = start.clone().addScaledVector(dir, len * (0.35 + 0.65 * (k + 1) / curt));
       // the twig texture hangs from its top edge, so grow the card upward from below the limb
       const up = new THREE.Vector3((r() - 0.5) * 0.4, 1, (r() - 0.5) * 0.4).normalize();
       const sz = 1.0 + r() * 0.6;
-      if (r() < 0.6) cardCluster(leaves, pos.clone().addScaledVector(up, -sz * 0.8), up, sz, r);
+      if (r() < 0.92) cardCluster(leaves, pos.clone().addScaledVector(up, -sz * 0.8), up, sz, r);
     }
   }
   const woodGeo = mergeGeometries(wood);
