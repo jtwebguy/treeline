@@ -41,6 +41,24 @@
     #scope { position: fixed; inset: 0; pointer-events: none; opacity: 0; transition: opacity .08s;
       background: radial-gradient(circle at center, transparent 0, transparent 34vmin, rgba(0,0,0,.6) 35vmin, #000 36.5vmin); }
     #scope.on { opacity: 1; }
+    #hit { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px; opacity: 0; }
+    #hit::before, #hit::after { content: ""; position: absolute; left: 50%; top: 0; width: 2px; height: 100%; margin-left: -1px;
+      background: linear-gradient(#fff 0 35%, transparent 35% 65%, #fff 65%); }
+    #hit::before { transform: rotate(45deg); } #hit::after { transform: rotate(-45deg); }
+    #hit.on { animation: hitfade .25s ease-out; }
+    #hit.kill::before, #hit.kill::after { background: linear-gradient(#e0483a 0 35%, transparent 35% 65%, #e0483a 65%); }
+    @keyframes hitfade { from { opacity: 1; } to { opacity: 0; } }
+    #healthBox { position: absolute; left: 24px; bottom: 20px; text-shadow: 0 1px 3px rgba(0,0,0,.7); }
+    #healthBox .lbl { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: rgba(232,228,220,.75); }
+    #health { font: 600 34px ui-monospace, monospace; color: var(--fg); }
+    #health.low { color: #e0483a; }
+    #hostiles { position: absolute; left: 24px; top: 16px; font-size: 12px; letter-spacing: .12em; text-transform: uppercase;
+      color: rgba(232,228,220,.75); text-shadow: 0 1px 3px rgba(0,0,0,.7); }
+    #hurt { position: fixed; inset: 0; pointer-events: none; opacity: 0;
+      background: radial-gradient(ellipse at center, transparent 40%, rgba(150,20,10,.75) 100%); }
+    #dead { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(40,8,6,.7); }
+    #dead.hidden { display: none; }
+    #dead h1 { font-size: 34px; }
     #scope svg { position: absolute; left: 50%; top: 50%; width: 72vmin; height: 72vmin; transform: translate(-50%, -50%); }
   </style>
   <script type="importmap">
@@ -55,7 +73,9 @@
 <body>
   <div id="vignette"></div>
   <div id="hud" class="hidden">
-    <div id="dot"></div><div id="fps"></div>
+    <div id="dot"></div><div id="hit"></div><div id="fps"></div>
+    <div id="hostiles"></div>
+    <div id="healthBox"><div class="lbl">Health</div><div id="health">100</div></div>
     <div id="ammoBox"><div id="weapon"></div><div id="ammo"></div></div>
   </div>
   <div id="scope">
@@ -64,6 +84,13 @@
       <rect x="12" y="-0.8" width="88" height="1.6" />
       <path d="M -2.2 100 L -2.2 6 L 0 0 L 2.2 6 L 2.2 100 Z" />
     </svg>
+  </div>
+  <div id="hurt"></div>
+  <div id="dead" class="hidden">
+    <div class="card">
+      <h1>Killed in action<small>Treeline</small></h1>
+      <button id="restart">Restart</button>
+    </div>
   </div>
   <div id="overlay">
     <div class="card">

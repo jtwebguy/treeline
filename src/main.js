@@ -6,6 +6,7 @@ import { createForest, windUniform } from './trees.js';
 import { createProps } from './props.js';
 import { Effects } from './effects.js';
 import { Weapons } from './weapons.js';
+import { Enemies } from './enemies.js';
 import { HALF, TRENCH, heightAt } from './world.js';
 
 // ------------------------------------------------------------------ renderer
@@ -65,6 +66,11 @@ const ui = {
   ammo: document.getElementById('ammo'),
   scope: document.getElementById('scope'),
   dot: document.getElementById('dot'),
+  hit: document.getElementById('hit'),
+  health: document.getElementById('health'),
+  hurt: document.getElementById('hurt'),
+  dead: document.getElementById('dead'),
+  restart: document.getElementById('restart'),
 };
 const failures = [];
 
@@ -73,6 +79,8 @@ const forest = createForest();
 scene.add(forest.group);
 const effects = new Effects(scene, { hemi, fog: scene.fog });
 const weapons = new Weapons({ camera, scene, renderer, effects, colliders: forest.colliders, ui });
+const enemies = new Enemies({ scene, colliders: forest.colliders, weapons, effects, onPlayerHit: (dmg, from) => hurtPlayer(dmg, from) });
+weapons.enemies = enemies;
 createProps(forest.snappedSpots, (id) => failures.push(id)).then((g) => scene.add(g));
 
 manager.onProgress = (url, done, total) => {
@@ -92,14 +100,37 @@ manager.onLoad = () => {
 // ------------------------------------------------------------------ player
 const controls = new PointerLockControls(camera, document.body);
 const EYE = 1.68;
-const player = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), onGround: false, bob: 0 };
-{
+const player = { pos: new THREE.Vector3(), vel: new THREE.Vector3(), onGround: false, bob: 0, health: 100, alive: true, hurtT: 99 };
+function spawnPlayer() {
   // spawn inside the trench, facing north toward no-man's land
   const [x, z] = TRENCH[Math.floor(TRENCH.length * 0.45)];
   player.pos.set(x, heightAt(x, z), z);
+  player.vel.set(0, 0, 0);
   camera.position.set(x, player.pos.y + EYE, z);
   camera.lookAt(x, player.pos.y + EYE + 1.5, z - 20);
 }
+spawnPlayer();
+
+function updateHealthHud() {
+  ui.health.textContent = `${Math.max(0, Math.ceil(player.health))}`;
+  ui.health.classList.toggle('low', player.health < 35);
+}
+function hurtPlayer(dmg) {
+  if (!playing || !player.alive) return;
+  player.health -= dmg;
+  player.hurtT = 0;
+  ui.hurt.style.opacity = Math.min(0.85, 0.35 + dmg / 30);
+  if (effects.audio) weapons.noiseBurst(effects.audio.ctx.currentTime, 0.12, 160, 0.8, 'lowpass');
+  updateHealthHud();
+  if (player.health <= 0) {
+    player.alive = false;
+    weapons.trigger = false; weapons.aiming = false;
+    ui.dead.classList.remove('hidden');
+    ui.hud.classList.add('hidden');
+    if (controls.isLocked) controls.unlock();
+  }
+}
+updateHealthHud();
 
 const keys = {};
 addEventListener('keydown', (e) => { keys[e.code] = true; if (e.code === 'Space') e.preventDefault(); });
@@ -110,10 +141,25 @@ addEventListener('keyup', (e) => { keys[e.code] = false; });
 let playing = false;
 const setPlaying = (on) => {
   playing = on;
-  ui.overlay.classList.toggle('hidden', on);
-  ui.hud.classList.toggle('hidden', !on);
+  // after death the "killed in action" card stays up instead of the pause menu
+  ui.overlay.classList.toggle('hidden', on || !player.alive);
+  ui.hud.classList.toggle('hidden', !on || !player.alive);
   if (!on) ui.start.textContent = 'Resume';
 };
+ui.restart.addEventListener('click', () => {
+  player.health = 100; player.alive = true; player.hurtT = 99;
+  ui.hurt.style.opacity = 0;
+  updateHealthHud();
+  spawnPlayer();
+  for (const s of Object.values(weapons.state)) { s.mag = 0; s.reserve = 0; }
+  weapons.state.m4.mag = 30; weapons.state.m4.reserve = 150;
+  weapons.state.mosin.mag = 5; weapons.state.mosin.reserve = 40;
+  weapons.updateHud();
+  enemies.reset();
+  ui.dead.classList.add('hidden');
+  setPlaying(true);
+  try { const p = controls.lock(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* drag-look fallback */ }
+});
 ui.start.addEventListener('click', () => {
   effects.startAudio();
   setPlaying(true);
@@ -127,16 +173,21 @@ addEventListener('keydown', (e) => { if (e.code === 'Escape' && playing && !cont
 const euler = new THREE.Euler(0, 0, 0, 'YXZ');
 let dragging = false;
 // Mouse: left fires, right aims. Without pointer lock, left-drag looks and F fires.
-renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
-renderer.domElement.addEventListener('mousedown', (e) => {
-  if (!playing) return;
-  if (controls.isLocked || e.button === 2) weapons.onMouseDown(e.button);
+// While the pointer is locked the browser sends every mouse event to the lock
+// target (document.body), not the canvas — so listen on the document, or the
+// right button (aim / scope) and the left button never reach the weapons.
+document.addEventListener('contextmenu', (e) => { if (playing || e.target === renderer.domElement) e.preventDefault(); });
+document.addEventListener('mousedown', (e) => {
+  if (!playing || !player.alive) return;
+  if (controls.isLocked) { weapons.onMouseDown(e.button); e.preventDefault(); return; }
+  if (e.target !== renderer.domElement) return;
+  if (e.button === 2) weapons.onMouseDown(2);
   else if (e.button === 0) dragging = true;
 });
 addEventListener('mouseup', (e) => { dragging = false; weapons.onMouseUp(e.button); });
 addEventListener('wheel', () => { if (playing) weapons.cycle(); });
 addEventListener('keydown', (e) => {
-  if (!playing) return;
+  if (!playing || !player.alive) return;
   weapons.onKey(e.code);
   if (e.code === 'KeyF') weapons.onMouseDown(0);
 });
@@ -175,7 +226,8 @@ function updatePlayer(dt) {
   if (keys.KeyS || keys.ArrowDown) wish.sub(fwd);
   if (keys.KeyD || keys.ArrowRight) wish.add(right);
   if (keys.KeyA || keys.ArrowLeft) wish.sub(right);
-  const crouch = keys.KeyC || keys.ControlLeft;
+  const crouch = !!(keys.KeyC || keys.ControlLeft);
+  player.crouch = crouch;
   const sprinting = !crouch && !weapons.aiming && (keys.ShiftLeft || keys.ShiftRight) && (keys.KeyW || keys.ArrowUp);
   const speed = (crouch ? 1.8 : sprinting ? 6.8 : 3.6) * (weapons.aiming ? 0.55 : 1);
   player.sprinting = sprinting;
@@ -218,7 +270,16 @@ renderer.setAnimationLoop(() => {
   const t = clock.getElapsed();
   windUniform.value = t;
   controls.pointerSpeed = camera.fov / 70; // slower look while zoomed
-  if (playing) updatePlayer(dt);
+  if (playing && player.alive) updatePlayer(dt);
+  if (playing) {
+    // slow health regeneration after six seconds without being hit
+    player.hurtT += dt;
+    if (player.alive && player.hurtT > 6 && player.health < 100) { player.health = Math.min(100, player.health + 9 * dt); updateHealthHud(); }
+    ui.hurt.style.opacity = Math.max(0, (parseFloat(ui.hurt.style.opacity) || 0) - dt * 1.2);
+    player.eye = camera.position;
+    player.moving = player.onGround && Math.hypot(player.vel.x, player.vel.z) > 0.5;
+    enemies.update(dt, t, player);
+  }
   else { sun.target.position.copy(player.pos); sun.position.copy(player.pos).addScaledVector(SUN_DIR, 120); }
   effects.update(dt, t, camera.position);
   weapons.update(dt, t, {
@@ -233,7 +294,7 @@ renderer.setAnimationLoop(() => {
   if (fpsT > 0.5) { fpsEl.textContent = `${Math.round(frames / fpsT)} fps`; frames = 0; fpsT = 0; }
 });
 
-window.game = { scene, camera, player, renderer, forest, weapons };  // handy for debugging in the console
+window.game = { scene, camera, player, renderer, forest, weapons, enemies, heightAt };  // handy for debugging in the console
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;

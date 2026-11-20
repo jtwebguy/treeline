@@ -18,7 +18,7 @@ const DEFS = {
     ads: new THREE.Vector3(0, 0, -0.14), adsFov: 52,
     muzzle: new THREE.Vector3(0, -0.062, -0.57),
     auto: true, interval: 60 / 750, mag: 30, reserve: 150, reload: 2.3,
-    kick: 0.9, camKick: 0.006, spread: 0.0025, hipSpread: 0.018,
+    kick: 0.9, camKick: 0.006, spread: 0.0025, hipSpread: 0.018, damage: 34,
     sound: 'rifle',
   },
   mosin: {
@@ -27,7 +27,7 @@ const DEFS = {
     ads: new THREE.Vector3(0, 0, -0.07), adsFov: 70 / 3.5, scoped: true,
     muzzle: new THREE.Vector3(0.016, -0.045, -0.79),
     auto: false, interval: 1.35, mag: 5, reserve: 40, reload: 3.4, perRound: 0.55,
-    kick: 2.2, camKick: 0.03, spread: 0.0003, hipSpread: 0.03,
+    kick: 2.2, camKick: 0.03, spread: 0.0003, hipSpread: 0.03, damage: 120,
     sound: 'sniper',
   },
 };
@@ -181,6 +181,7 @@ export class Weapons {
     this.vmFlash.intensity = 2;
 
     this.shot(def.sound);
+    if (this.enemies) this.enemies.onPlayerShot(this.camera.position);
     this.hitscan(def);
     this.updateHud();
     if (this.current === 'mosin' && st.mag > 0) setTimeout(() => this.boltSound(), 380);
@@ -215,14 +216,32 @@ export class Weapons {
       const x = o.x + dir.x * t, y = o.y + dir.y * t, z = o.z + dir.z * t;
       if (y < heightAt(x, z)) { best = t; kind = 'ground'; break; }
     }
+    // soldiers: limb capsules from the live animated skeleton
+    if (this.enemies) {
+      const eh = this.enemies.raycast(o, dir, Math.min(best, 500));
+      if (eh && eh.t < best) {
+        const killed = this.enemies.damage(eh.e, def.damage, dir, eh.head);
+        this.spawnImpact(o.clone().addScaledVector(dir, eh.t), 'flesh', eh.t);
+        this.hitMarker(killed || eh.head);
+        return;
+      }
+    }
     if (best < 500) {
       hit = o.clone().addScaledVector(dir, best);
       this.spawnImpact(hit, kind, best);
     }
   }
 
+  hitMarker(strong) {
+    const el = this.ui && this.ui.hit;
+    if (!el) return;
+    el.classList.remove('on', 'kill'); void el.offsetWidth;
+    el.classList.add('on'); if (strong) el.classList.add('kill');
+    this.click(0.25, 5200);
+  }
+
   spawnImpact(p, kind, dist) {
-    const color = kind === 'tree' ? 0x8a6a4a : 0x6d5d4c;
+    const color = kind === 'tree' ? 0x8a6a4a : kind === 'flesh' ? 0x5a1d17 : 0x6d5d4c;
     for (let i = 0; i < (kind === 'tree' ? 4 : 6); i++) {
       const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.puffTex, color, transparent: true, depthWrite: false, opacity: 0.8 }));
       s.position.copy(p);
