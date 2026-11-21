@@ -71,6 +71,8 @@ const ui = {
   hurt: document.getElementById('hurt'),
   dead: document.getElementById('dead'),
   restart: document.getElementById('restart'),
+  prompt: document.getElementById('prompt'),
+  toast: document.getElementById('toast'),
 };
 const failures = [];
 
@@ -151,10 +153,7 @@ ui.restart.addEventListener('click', () => {
   ui.hurt.style.opacity = 0;
   updateHealthHud();
   spawnPlayer();
-  for (const s of Object.values(weapons.state)) { s.mag = 0; s.reserve = 0; }
-  weapons.state.m4.mag = 30; weapons.state.m4.reserve = 150;
-  weapons.state.mosin.mag = 5; weapons.state.mosin.reserve = 40;
-  weapons.updateHud();
+  weapons.resetLoadout();
   enemies.reset();
   ui.dead.classList.add('hidden');
   setPlaying(true);
@@ -185,10 +184,13 @@ document.addEventListener('mousedown', (e) => {
   else if (e.button === 0) dragging = true;
 });
 addEventListener('mouseup', (e) => { dragging = false; weapons.onMouseUp(e.button); });
-addEventListener('wheel', () => { if (playing) weapons.cycle(); });
+addEventListener('wheel', (e) => { if (playing) weapons.cycle(e.deltaY < 0 ? -1 : 1); });
 addEventListener('keydown', (e) => {
   if (!playing || !player.alive) return;
   weapons.onKey(e.code);
+  if (e.code === 'KeyE') tryPickup();
+  // aim is a toggle now: breaking into a sprint lowers the gun
+  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') weapons.aiming = false;
   if (e.code === 'KeyF') weapons.onMouseDown(0);
 });
 addEventListener('keyup', (e) => { if (e.code === 'KeyF') weapons.onMouseUp(0); });
@@ -200,6 +202,31 @@ addEventListener('mousemove', (e) => {
   euler.x = THREE.MathUtils.clamp(euler.x - e.movementY * 0.003, -1.5, 1.5);
   camera.quaternion.setFromEuler(euler);
 });
+
+// ------------------------------------------------------------------ pickups
+// Dead soldiers drop their guns: walk up to one and press E.
+let toastT = 0;
+function toast(msg) {
+  ui.toast.textContent = msg;
+  ui.toast.classList.add('on');
+  toastT = 1.8;
+}
+function tryPickup() {
+  const d = enemies.drops.nearest(player.pos);
+  if (!d) return;
+  const msg = weapons.pickup(d.kind, d.ammo);
+  enemies.drops.remove(d);
+  if (msg) toast(msg);
+}
+function updatePrompt(dt) {
+  const d = playing && player.alive ? enemies.drops.nearest(player.pos) : null;
+  if (d) {
+    const what = weapons.owns(d.kind) ? `${weapons.label(d.kind)} ammo (+${d.ammo})` : `${weapons.label(d.kind)}`;
+    ui.prompt.innerHTML = `<kbd>E</kbd> Pick up ${what}`;
+  }
+  ui.prompt.classList.toggle('on', !!d);
+  if (toastT > 0 && (toastT -= dt) <= 0) ui.toast.classList.remove('on');
+}
 
 // tree collision grid
 const CELL = 8, grid = new Map();
@@ -281,6 +308,7 @@ renderer.setAnimationLoop(() => {
     enemies.update(dt, t, player);
   }
   else { sun.target.position.copy(player.pos); sun.position.copy(player.pos).addScaledVector(SUN_DIR, 120); }
+  updatePrompt(dt);
   effects.update(dt, t, camera.position);
   weapons.update(dt, t, {
     moving: playing && player.onGround && Math.hypot(player.vel.x, player.vel.z) > 0.5,
