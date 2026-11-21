@@ -1,8 +1,16 @@
 // Verlet ragdoll for the Character Creator soldier rig.
 //
 // On death the animation stops and 15 particles are placed on the joints. A
-// rigid torso box (hips, chest, shoulders, thighs), limb sticks and a few soft
-// limits are relaxed each step against gravity, the terrain and tree trunks.
+// rigid torso box (hips, chest, shoulders, thighs) and limb sticks are relaxed
+// each step against gravity, the terrain and tree trunks, together with human
+// joint limits so the body only folds the way a real one can:
+//   - knees are hinges that bend only backwards, elbows only forwards
+//     (with the upper arm's twist), neither past ~125-140 degrees
+//   - hips, shoulders and neck have ranges of motion measured in the torso's
+//     own frame (no leg swinging up behind the back, no head rolled onto a
+//     shoulder)
+//   - elbows, hands, knees and feet are kept out of the torso, and the legs
+//     out of each other
 // The skeleton is then posed from the particles: the hip from the torso frame,
 // every limb bone by rotating its death pose onto the new joint direction.
 import * as THREE from 'three';
@@ -21,7 +29,27 @@ const STICKS = [['chest', 'head'], ['lua', 'lfa'], ['lfa', 'lh'], ['rua', 'rfa']
   ['lth', 'lca'], ['lca', 'lft'], ['rth', 'rca'], ['rca', 'rft']];
 const SOFT = [['lua', 'head', 0.4], ['rua', 'head', 0.4]];
 // joints may bend but not fold flat onto themselves: [a, b, fraction of the straight length]
-const MIN = [['lua', 'lh', 0.45], ['rua', 'rh', 0.45], ['lth', 'lft', 0.55], ['rth', 'rft', 0.55], ['hip', 'head', 0.85]];
+const MIN = [['lua', 'lh', 0.5], ['rua', 'rh', 0.5], ['lth', 'lft', 0.55], ['rth', 'rft', 0.55], ['hip', 'head', 0.85]];
+// legs may not pass through each other: [a, b, metres]
+const APART = [['lca', 'rca', 0.13], ['lft', 'rft', 0.12], ['lca', 'rft', 0.1], ['rca', 'lft', 0.1]];
+// limb joints kept out of the torso (a capsule round the hip -> chest line)
+const OUTSIDE = ['lfa', 'lh', 'rfa', 'rh', 'lca', 'lft', 'rca', 'rft'];
+const TORSO_R = 0.1;
+
+// Ranges of motion of a limb's direction in the torso frame, as limits on
+// its components: out = away from the body's midline, up, fwd = the way the
+// body faces. A thigh or upper arm hanging straight down is (0, -1, 0).
+const ROM = {
+  hip: { out: [-0.3, 0.75], up: [-1, 0.5], fwd: [-0.4, 1] },        // ~20 deg adduction, 50 abduction, 25 extension, 120 flexion
+  shoulder: { out: [-0.5, 1], up: [-1, 1], fwd: [-0.55, 1] },       // can't reach far across or behind the body
+  neck: { out: [-0.5, 0.5], up: [0.62, 1], fwd: [-0.4, 0.75] },     // ~50 deg any way, less backwards
+};
+// [upper joint, middle joint, end joint, ROM of the upper limb, hinge: which
+// way the end swings relative to the limb's front, allowed sideways play]
+const LIMBS = [
+  ['lth', 'lca', 'lft', 'hip', -1, 0.3], ['rth', 'rca', 'rft', 'hip', -1, 0.3],    // knees bend backwards, ~17 deg play
+  ['lua', 'lfa', 'lh', 'shoulder', 1, 1.75], ['rua', 'rfa', 'rh', 'shoulder', 1, 1.75], // elbows forwards, upper-arm twist ~100 deg
+];
 // bone -> joint particle it should point at (parents before children)
 const DRIVE = [
   ['CC_Base_NeckTwist01', 'head'],
@@ -34,6 +62,9 @@ const DRIVE = [
 const G = 9.8, H = 1 / 90, ITER = 6;
 const _v = new THREE.Vector3(), _d = new THREE.Vector3(), _q = new THREE.Quaternion(), _pq = new THREE.Quaternion();
 const _m = new THREE.Matrix4(), _x = new THREE.Vector3(), _y = new THREE.Vector3(), _z = new THREE.Vector3();
+const _fq = new THREE.Quaternion(), _fqi = new THREE.Quaternion(), _sq = new THREE.Quaternion();
+const _t = new THREE.Vector3(), _s = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
+const DOWN = new THREE.Vector3(0, -1, 0);
 
 export class Ragdoll {
   // root: the soldier's scene root; bones: name -> Bone; trees(x, z, cb) visits nearby tree circles
@@ -60,6 +91,10 @@ export class Ragdoll {
     this.hip = bones.CC_Base_Hip;
     this.hipQ0 = this.hip.getWorldQuaternion(new THREE.Quaternion());
     this.frame0 = this.frame(new THREE.Quaternion());
+    // the way the body faces (the model looks down its local +Z), in the torso frame
+    this.fwd = root.getWorldDirection(new THREE.Vector3()).applyQuaternion(this.frame0.clone().invert());
+    this.fwd.y = 0; this.fwd.normalize();
+    this.out = new THREE.Vector3(1, 0, 0);    // torso-frame +X runs left thigh -> right thigh
     this.drive = DRIVE.filter(([n]) => bones[n]).map(([n, k]) => {
       const b = bones[n], bp = b.getWorldPosition(new THREE.Vector3());
       return { b, k, q0: b.getWorldQuaternion(new THREE.Quaternion()), d0: this.p[k].pos.clone().sub(bp).normalize() };
@@ -116,6 +151,8 @@ export class Ragdoll {
     for (let it = 0; it < ITER; it++) {
       for (const [a, b, rest, k] of this.cons) this.solve(this.p[a], this.p[b], rest, k, false);
       for (const [a, b, min] of this.mins) this.solve(this.p[a], this.p[b], min, 0.5, true);
+      for (const [a, b, min] of APART) this.solve(this.p[a], this.p[b], min, 0.5, true);
+      this.limits();
       this.collide();
     }
     return maxV;
@@ -127,6 +164,85 @@ export class Ragdoll {
     if (l < 1e-6 || (minOnly && l >= rest)) return;
     const c = ((l - rest) / l) * 0.5 * k;
     A.pos.addScaledVector(_d, c); B.pos.addScaledVector(_d, -c);
+  }
+
+  // ---------------------------------------------------------------- joint limits
+  limits() {
+    const P = this.p;
+    this.frame(_fq); _fqi.copy(_fq).invert();
+    for (const [up, mid, end, rom, bend, play] of LIMBS) {
+      const side = up[0] === 'l' ? -1 : 1;
+      this.range(P[up], P[mid], ROM[rom], side);
+      this.hinge(P[up], P[mid], P[end], bend, play);
+    }
+    this.range(P.chest, P.head, ROM.neck, 0);
+    this.keepOut();
+  }
+
+  // clamp the direction a -> b to a range of motion in the torso frame; b moves
+  range(A, B, rom, side) {
+    _t.subVectors(B.pos, A.pos);
+    const len = _t.length();
+    if (len < 1e-5) return;
+    _t.divideScalar(len).applyQuaternion(_fqi);                // torso-frame direction
+    const fsign = this.fwd.z < 0 ? -1 : 1;
+    const out = side ? _t.x * side : _t.x, up = _t.y, fwd = _t.z * fsign;
+    const cl = (v, [lo, hi]) => Math.min(hi, Math.max(lo, v));
+    const o2 = cl(out, rom.out), u2 = cl(up, rom.up), f2 = cl(fwd, rom.fwd);
+    if (o2 === out && u2 === up && f2 === fwd) return;
+    _t.set(side ? o2 * side : o2, u2, f2 * fsign).normalize().applyQuaternion(_fq);
+    _a.copy(A.pos).addScaledVector(_t, len);
+    B.pos.lerp(_a, 0.8);
+  }
+
+  // A (upper) - B (middle) - C (end): C may only swing to one side of the limb.
+  // The limb's front is the body's front carried along by the limb's swing
+  // away from hanging straight down; bend -1 = end swings behind (knee), +1 =
+  // in front (elbow); play = radians it may stray sideways from that plane.
+  hinge(A, B, C, bend, play) {
+    _t.subVectors(B.pos, A.pos).normalize();                      // upper limb direction
+    _s.subVectors(C.pos, B.pos);
+    const ls = _s.length();
+    if (ls < 1e-5) return;
+    _s.divideScalar(ls);
+    // limb front in world space
+    _a.copy(DOWN).applyQuaternion(_fq);
+    _sq.setFromUnitVectors(_a, _t);
+    _b.copy(this.fwd).applyQuaternion(_fq).applyQuaternion(_sq);
+    _b.addScaledVector(_t, -_b.dot(_t));
+    if (_b.lengthSq() < 1e-8) return;
+    _b.normalize().multiplyScalar(bend);                         // the way the end should swing
+    // sideways deviation of the lower limb from straight
+    const along = _s.dot(_t);
+    _c.copy(_s).addScaledVector(_t, -along);
+    const dl = _c.length();
+    if (dl < 1e-4) return;                                       // straight: nothing to bend
+    _c.divideScalar(dl);
+    const cosA = _c.dot(_b);
+    if (cosA >= Math.cos(play)) return;
+    // rotate the bend back to the edge of the allowed wedge, keeping its amount
+    _a.copy(_c).addScaledVector(_b, -cosA);
+    if (_a.lengthSq() < 1e-8) _a.crossVectors(_t, _b);
+    _a.normalize();
+    _c.copy(_b).multiplyScalar(Math.cos(play)).addScaledVector(_a, Math.sin(play));
+    _s.copy(_t).multiplyScalar(along).addScaledVector(_c, dl);
+    _a.copy(B.pos).addScaledVector(_s, ls);
+    C.pos.lerp(_a, 0.6);
+  }
+
+  // keep limb joints out of the torso capsule (hip -> chest)
+  keepOut() {
+    const P = this.p, h = P.hip.pos, c = P.chest.pos;
+    _t.subVectors(c, h);
+    const L2 = _t.lengthSq();
+    for (const k of OUTSIDE) {
+      const p = P[k];
+      const u = Math.min(1, Math.max(0, _a.subVectors(p.pos, h).dot(_t) / L2));
+      _b.copy(h).addScaledVector(_t, u);
+      _a.subVectors(p.pos, _b);
+      const d = _a.length(), min = TORSO_R + p.r;
+      if (d < min && d > 1e-5) p.pos.copy(_b).addScaledVector(_a, min / d);
+    }
   }
 
   collide() {

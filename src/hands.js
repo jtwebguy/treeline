@@ -1,24 +1,32 @@
 // First-person hands (models/hand_rigged.fbx): two rigged forearms + hands
-// with three-joint fingers and thumbs. The rig has no animation, so the grip
-// is posed in code: each wrist is placed and oriented on a target, the forearm
-// swings to meet it from below the camera, and the fingers curl around the gun.
+// with three-joint fingers and thumbs, used for every weapon.
 //
-// The FBX's texture wasn't embedded, so the hands get a flat dark glove.
+// The rig is the same mesh as the static arms that came baked into
+// vm_m4.glb / vm_mosin.glb (identical UVs), so it wears their glove-and-sleeve
+// texture (models/hands_basecolor.jpg + hands_normal.jpg; the FBX's own
+// texture wasn't embedded). It has no animation: for each weapon the wrists
+// are placed, the forearms swing to meet them and the fingers curl round the
+// gun (poseHand).
 import * as THREE from 'three';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
 import { manager } from './assets.js';
 
 const HAND_LEN = 0.19;    // metres, wrist to middle fingertip
 const FINGERS = ['index', 'middle', 'ring', 'pinky'];
 
 let promise = null;
-export function loadHands() {
+function loadTemplate() {
   if (promise) return promise;
   promise = new Promise((resolve, reject) => {
+    const tex = new THREE.TextureLoader(manager);
+    const map = tex.load('./models/hands_basecolor.jpg');
+    map.colorSpace = THREE.SRGBColorSpace; map.anisotropy = 4;
+    const normalMap = tex.load('./models/hands_normal.jpg');
     new FBXLoader(manager).load('./models/hand_rigged.fbx', (fbx) => {
       // drop the exported camera/light, swap the missing-texture material
       for (const o of [...fbx.children]) if (o.isCamera || o.isLight) fbx.remove(o);
-      const glove = new THREE.MeshStandardMaterial({ color: 0x3b3d37, roughness: 0.82, metalness: 0.0, envMapIntensity: 0.5 });
+      const glove = new THREE.MeshStandardMaterial({ map, normalMap, roughness: 0.85, metalness: 0, side: THREE.DoubleSide, envMapIntensity: 0.5 });
       fbx.traverse((o) => {
         if (o.isMesh) { o.material = glove; o.frustumCulled = false; o.castShadow = false; }
       });
@@ -36,12 +44,39 @@ export function loadHands() {
   return promise;
 }
 
+// a fresh, independently posable pair of hands
+export function loadHands() {
+  return loadTemplate().then((t) => skeletonClone(t));
+}
+
+// Grips for the M4 (right hand round the pistol grip, index on the trigger;
+// left hand cupping the handguard) and the Mosin (right hand on the wrist of
+// the stock, left under the forend), in each viewmodel's own space. The
+// shotgun's grip is HAND_POSE in shotgun.js.
+const v = (a) => new THREE.Vector3(...a);
+export const GRIP_POSES = {
+  m4: {
+    R: { wrist: v([0.035, -0.125, 0.065]), fingers: v([-0.42, -0.48, -0.73]), palm: v([-0.85, 0.1, 0.45]), elbow: v([0.3, -0.55, 0.78]),
+         curl: { index: [0.3, 0.6, 0.5], middle: 1, ring: 1, pinky: 1, thumb: [-0.9, -0.6, -0.4] } },
+    L: { wrist: v([-0.025, -0.12, -0.25]), fingers: v([0.45, 0.1, -0.88]), palm: v([0.4, 0.92, 0]), elbow: v([-0.45, -0.55, 0.7]),
+         curl: { index: [1, 0.8, 0.5], middle: [1, 0.8, 0.5], ring: [1, 0.8, 0.5], pinky: [1, 0.8, 0.5], thumb: [-0.9, -0.5, -0.3] } },
+  },
+  mosin: {
+    R: { wrist: v([0.035, -0.09, 0.095]), fingers: v([-0.6, -0.35, -0.7]), palm: v([-0.75, 0.35, 0.2]), elbow: v([0.5, -0.6, 0.6]),
+         curl: { index: [0.3, 0.5, 0.4], middle: 0.9, ring: 0.9, pinky: 0.9, thumb: [-0.9, -0.6, -0.4] } },
+    L: { wrist: v([-0.025, -0.112, -0.31]), fingers: v([0.45, 0.1, -0.88]), palm: v([0.4, 0.92, 0]), elbow: v([-0.45, -0.55, 0.7]),
+         curl: { index: [1, 0.8, 0.5], middle: [1, 0.8, 0.5], ring: [1, 0.8, 0.5], pinky: [1, 0.8, 0.5], thumb: [-0.9, -0.5, -0.3] } },
+  },
+};
+
 const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _m = new THREE.Matrix4();
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
 
 // Bind-pose references for one side ('L' or 'R'), measured once.
+const rigs = new WeakMap();
 function rig(root, side) {
-  if (root.userData['rig' + side]) return root.userData['rig' + side];
+  const cached = rigs.get(root)?.[side];
+  if (cached) return cached;
   root.updateMatrixWorld(true);
   const get = (n) => root.getObjectByName(n + side);
   const fore = get('forearm'), hand = get('hand');
@@ -72,7 +107,8 @@ function rig(root, side) {
       return { b, q0: b.quaternion.clone(), axis: curlAxisWorld.clone().applyQuaternion(bq).normalize() };
     });
   }
-  root.userData['rig' + side] = r;
+  if (!rigs.has(root)) rigs.set(root, {});
+  rigs.get(root)[side] = r;
   return r;
 }
 
@@ -111,8 +147,16 @@ export function poseHand(holder, side, { wrist, fingers, palm, elbow, curl = {} 
   r.hand.quaternion.copy(qFore.clone().invert().multiply(qDesired));
   r.hand.updateMatrixWorld(true);
 
+  curlFingers(holder, side, { index: 0.25, middle: 0.25, ring: 0.25, pinky: 0.25, thumb: 0.25, ...curl });
+}
+
+// Bend each finger's three joints from the rest pose toward the palm (radians;
+// one number for all three joints or [base, middle, tip]; negative opens).
+export function curlFingers(holder, side, curl = {}) {
+  const root = holder.children[0];
+  const r = rig(root, side);
   for (const f of [...FINGERS, 'thumb']) {
-    const c = curl[f] ?? 0.25;
+    const c = curl[f] ?? 0;
     const per = Array.isArray(c) ? c : [c, c, c];
     r.fingers[f].forEach((j, i) => j.b.quaternion.copy(j.q0).multiply(_q.setFromAxisAngle(j.axis, per[i])));
   }

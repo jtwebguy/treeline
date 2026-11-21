@@ -6,7 +6,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { manager } from './assets.js';
 import { heightAt } from './world.js';
 import { loadShotgun, viewmodelMesh, VM_MUZZLE, HAND_POSE } from './shotgun.js';
-import { loadHands, poseHand } from './hands.js';
+import { loadHands, poseHand, GRIP_POSES } from './hands.js';
 
 const loader = new GLTFLoader(manager);
 const D2R = Math.PI / 180;
@@ -124,7 +124,17 @@ export class Weapons {
           add(g);
         }).catch((e) => console.warn('shotgun viewmodel', e));
       }
-      else loader.load(def.file, (g) => add(g.scene));
+      else {
+        // the GLB's baked static arms are swapped for the rigged hands, placed on the same grip
+        const hands = loadHands().catch((e) => { console.warn('first-person hands', e); return null; });
+        loader.load(def.file, (g) => hands.then((h) => {
+          if (h) {
+            g.scene.traverse((o) => { if (/^arm/.test(o.name)) o.visible = false; });
+            g.scene.add(h); poseHand(h, 'R', GRIP_POSES[id].R); poseHand(h, 'L', GRIP_POSES[id].L);
+          }
+          add(g.scene);
+        }));
+      }
     }
 
     this.current = null;
