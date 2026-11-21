@@ -86,20 +86,18 @@ export function viewmodelMesh({ geometry, material }) {
 export const VM_MUZZLE = new THREE.Vector3(0, (3.05 - EYE.y) * VM_S, (-8.93 - EYE.x) * VM_S);
 
 // ---------------------------------------------------------------- hand grip
-// Hand targets in viewmodel space (see hands.js). vm(x, y): an OBJ-space point
-// on the gun's centre plane.
-const vm = (x, y, dx = 0, dy = 0, dz = 0) => new THREE.Vector3(dx, (y - EYE.y) * VM_S + dy, (x - EYE.x) * VM_S + dz);
+// Hand targets in viewmodel space (metres, origin at the rear of the receiver, -Z forward; see hands.js).
 export const HAND_POSE = {
   // right hand round the wrist of the stock, index finger to the trigger
   R: {
-    wrist: vm(3.3, 2.2, 0.035, -0.075, 0.085),
+    wrist: new THREE.Vector3(0.035, -0.075, 0.085),
     fingers: new THREE.Vector3(-0.6, -0.35, -0.7), palm: new THREE.Vector3(-0.75, 0.35, 0.2),
     elbow: new THREE.Vector3(0.5, -0.6, 0.6),
     curl: { index: [0.3, 0.5, 0.4], middle: 0.9, ring: 0.9, pinky: 0.9, thumb: [-0.9, -0.6, -0.4] },
   },
   // left hand cupping the pump from below
   L: {
-    wrist: vm(-4.0, 2.49, -0.03, -0.11, -0.27),
+    wrist: new THREE.Vector3(-0.03, -0.11, -0.27),
     fingers: new THREE.Vector3(0.45, 0.25, -0.85), palm: new THREE.Vector3(0.35, 0.93, 0),
     elbow: new THREE.Vector3(-0.45, -0.55, 0.7),
     curl: { index: 0.5, middle: 0.5, ring: 0.5, pinky: 0.5, thumb: [-0.9, -0.5, -0.3] },
