@@ -1,9 +1,12 @@
-// First-person weapons: M4A1 (automatic) and Mosin-Nagant M91/30 with PU scope.
+// First-person weapons: M4A1 (automatic), Mosin-Nagant M91/30 with PU scope,
+// and a pump shotgun picked up from dead enemies.
 // Viewmodels are drawn in their own scene/camera so they never clip into trees.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { manager } from './assets.js';
 import { heightAt } from './world.js';
+import { loadShotgun, viewmodelMesh, VM_MUZZLE, HAND_POSE } from './shotgun.js';
+import { loadHands, poseHand } from './hands.js';
 
 const loader = new GLTFLoader(manager);
 const D2R = Math.PI / 180;
@@ -18,7 +21,7 @@ const DEFS = {
     ads: new THREE.Vector3(0, 0, -0.14), adsFov: 52,
     muzzle: new THREE.Vector3(0, -0.062, -0.57),
     auto: true, interval: 60 / 750, mag: 30, reserve: 150, reload: 2.3,
-    kick: 0.9, camKick: 0.006, spread: 0.0025, hipSpread: 0.018, damage: 34,
+    kick: 0.9, camKick: 0.006, spread: 0.0025, hipSpread: 0.018, damage: 34, force: 3,
     sound: 'rifle',
   },
   mosin: {
@@ -27,10 +30,23 @@ const DEFS = {
     ads: new THREE.Vector3(0, 0, -0.07), adsFov: 70 / 3.5, scoped: true,
     muzzle: new THREE.Vector3(0.016, -0.045, -0.79),
     auto: false, interval: 1.35, mag: 5, reserve: 40, reload: 3.4, perRound: 0.55,
-    kick: 2.2, camKick: 0.03, spread: 0.0003, hipSpread: 0.03, damage: 120,
+    kick: 2.2, camKick: 0.03, spread: 0.0003, hipSpread: 0.03, damage: 120, force: 7,
     sound: 'sniper',
   },
+  // not carried at the start: taken from dead shotgunners
+  shotgun: {
+    name: 'Shotgun · 12 ga', obj: true,
+    // origin = rear of the receiver: aimed, the cheek sits ~26 cm behind it on the comb
+    hip: new THREE.Vector3(0.11, -0.115, -0.33), hipYaw: 3 * D2R,
+    ads: new THREE.Vector3(0, -0.016, -0.27), adsFov: 60,
+    muzzle: VM_MUZZLE,
+    auto: false, interval: 0.85, mag: 6, reserve: 0, perRound: 0.5,
+    kick: 2.4, camKick: 0.04, spread: 0.04, hipSpread: 0.05, damage: 24, force: 2.2,
+    pellets: 9, falloff: 28,
+    sound: 'shotgun', startOwned: false,
+  },
 };
+const ORDER = ['m4', 'mosin', 'shotgun'];
 
 function flashTexture() {
   const c = document.createElement('canvas'); c.width = c.height = 128;
@@ -74,21 +90,22 @@ export class Weapons {
     this.state = {};
     this.models = {};
     for (const [id, def] of Object.entries(DEFS)) {
-      this.state[id] = { mag: def.mag, reserve: def.reserve };
-      loader.load(def.file, (g) => {
+      const owned = def.startOwned !== false;
+      this.state[id] = { mag: owned ? def.mag : 0, reserve: def.reserve, owned };
+      const add = (content) => {
         const root = new THREE.Group();
-        g.scene.traverse((o) => {
+        content.traverse((o) => {
           if (o.isMesh) {
             o.frustumCulled = false;
             o.material.envMapIntensity = 0.6;
           }
         });
-        root.add(g.scene);
+        root.add(content);
         const flash = new THREE.Sprite(new THREE.SpriteMaterial({
           map: this.flashTex, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, opacity: 0,
         }));
         flash.position.copy(def.muzzle).add(new THREE.Vector3(0, 0, -0.06));
-        flash.scale.setScalar(id === 'mosin' ? 0.35 : 0.22);
+        flash.scale.setScalar(id === 'mosin' ? 0.35 : id === 'shotgun' ? 0.4 : 0.22);
         root.add(flash);
         root.userData.flash = flash;
         root.visible = false;
@@ -96,7 +113,18 @@ export class Weapons {
         this.models[id] = root;
         if (!this.current) this.equip(id, true);
         else if (id === this.current) { root.visible = true; }
-      });
+      };
+      if (def.obj) {
+        // the shotgun has no baked arms: grip it with the rigged first-person hands
+        const hands = loadHands().catch((e) => { console.warn('first-person hands', e); return null; });
+        Promise.all([loadShotgun(), hands]).then(([sg, h]) => {
+          const g = new THREE.Group();
+          g.add(viewmodelMesh(sg));
+          if (h) { g.add(h); poseHand(h, 'R', HAND_POSE.R); poseHand(h, 'L', HAND_POSE.L); }
+          add(g);
+        }).catch((e) => console.warn('shotgun viewmodel', e));
+      }
+      else loader.load(def.file, (g) => add(g.scene));
     }
 
     this.current = null;
@@ -127,22 +155,27 @@ export class Weapons {
   // ------------------------------------------------------------ input
   onMouseDown(button) {
     if (button === 0) { this.trigger = true; if (!DEFS[this.current].auto) this.tryFire(); }
-    if (button === 2) this.aiming = true;
+    if (button === 2) this.aiming = !this.aiming;     // click to aim, click again to lower
   }
   onMouseUp(button) {
     if (button === 0) this.trigger = false;
-    if (button === 2) this.aiming = false;
   }
   onMouseMove(dx, dy) { this.swayTarget.x += dx * 0.00012; this.swayTarget.y += dy * 0.00012; }
   onKey(code) {
     if (code === 'Digit1') this.requestSwitch('m4');
     if (code === 'Digit2') this.requestSwitch('mosin');
+    if (code === 'Digit3') this.requestSwitch('shotgun');
     if (code === 'KeyR') this.startReload();
   }
-  cycle() { this.requestSwitch(this.current === 'm4' ? 'mosin' : 'm4'); }
+  cycle(dirn = 1) {
+    const owned = ORDER.filter((k) => this.state[k].owned);
+    const i = owned.indexOf(this.current);
+    this.requestSwitch(owned[(i + dirn + owned.length) % owned.length]);
+  }
 
   requestSwitch(id) {
-    if (id === this.current || this.switching > 0) return;
+    if (!id || id === this.current || this.switching > 0 || !this.state[id].owned) return;
+    this.aiming = false;
     this.pendingSwitch = id;
     this.switching = 0.5;   // lower, swap at midpoint, raise
     this.reloading = 0;
@@ -155,6 +188,36 @@ export class Weapons {
     this.updateHud();
   }
 
+  // back to the starting kit (restart after death)
+  resetLoadout() {
+    for (const [id, def] of Object.entries(DEFS)) {
+      const owned = def.startOwned !== false;
+      Object.assign(this.state[id], { mag: owned ? def.mag : 0, reserve: def.reserve, owned });
+    }
+    this.aiming = false; this.trigger = false; this.reloading = 0; this.switching = 0; this.pendingSwitch = null;
+    this.equip('m4');
+  }
+
+  // a weapon off a dead soldier: new gun, or its ammunition for one we carry
+  pickup(kind, ammo) {
+    const st = this.state[kind], def = DEFS[kind];
+    if (!st) return '';
+    this.click(0.4, 1200); setTimeout(() => this.click(0.35, 2200), 120);
+    if (!st.owned) {
+      st.owned = true;
+      st.mag = Math.min(def.mag, ammo);
+      st.reserve = Math.max(0, ammo - st.mag);
+      this.requestSwitch(kind);
+      return `Picked up ${def.name}`;
+    }
+    st.reserve += ammo;
+    this.updateHud();
+    return `+${ammo} ${kind === 'shotgun' ? 'shells' : 'rounds'}`;
+  }
+
+  label(kind) { return DEFS[kind] ? DEFS[kind].name : kind; }
+  owns(kind) { return !!(this.state[kind] && this.state[kind].owned); }
+
   // ------------------------------------------------------------ firing
   tryFire() {
     const def = DEFS[this.current], st = this.state[this.current];
@@ -163,6 +226,12 @@ export class Weapons {
     st.mag--;
     this.cooldown = def.interval;
     this.recoil = Math.min(1.6, this.recoil + def.kick * 0.35);
+
+    // The round leaves along the sight line the player aimed with. (The kick
+    // used to be applied first, which sent every Mosin round ~1.7° high —
+    // three metres over the target at 100 m.)
+    if (this.enemies) this.enemies.onPlayerShot(this.camera.position);
+    this.hitscan(def);
 
     // camera recoil: the player has to pull it back down
     const e = new THREE.Euler(0, 0, 0, 'YXZ').setFromQuaternion(this.camera.quaternion);
@@ -181,19 +250,34 @@ export class Weapons {
     this.vmFlash.intensity = 2;
 
     this.shot(def.sound);
-    if (this.enemies) this.enemies.onPlayerShot(this.camera.position);
-    this.hitscan(def);
     this.updateHud();
     if (this.current === 'mosin' && st.mag > 0) setTimeout(() => this.boltSound(), 380);
+    if (this.current === 'shotgun' && st.mag > 0) setTimeout(() => this.pumpSound(), 330);
   }
 
   hitscan(def) {
-    const spread = THREE.MathUtils.lerp(def.hipSpread, def.spread, this.ads);
-    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
-    dir.x += (Math.random() - 0.5) * spread; dir.y += (Math.random() - 0.5) * spread; dir.z += (Math.random() - 0.5) * spread;
-    dir.normalize();
+    const n = def.pellets || 1;
+    // once the scope overlay is up the rifle is on target: full precision even
+    // while the zoom finishes settling
+    const ads = def.scoped && this.ads > 0.85 ? 1 : this.ads;
+    const spread = THREE.MathUtils.lerp(def.hipSpread, def.spread, ads);
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    let marker = 0;      // 0 none, 1 hit, 2 kill/headshot
+    for (let i = 0; i < n; i++) {
+      // uniform within a cone of the given spread
+      const a = Math.random() * Math.PI * 2, r = spread * 0.5 * Math.sqrt(Math.random());
+      const dir = fwd.clone().addScaledVector(right, Math.cos(a) * r).addScaledVector(up, Math.sin(a) * r).normalize();
+      marker = Math.max(marker, this.trace(def, dir, i === 0, n > 1));
+    }
+    if (marker) this.hitMarker(marker > 1);
+  }
+
+  // one round (or pellet) along dir; returns 0 miss, 1 hit, 2 kill or headshot
+  trace(def, dir, sound, pellet) {
     const o = this.camera.position;
-    let hit = null, kind = 'ground';
+    let kind = 'ground';
     // trees: 2D ray vs circles
     let best = 600;
     const dx = dir.x, dz = dir.z, len2 = dx * dx + dz * dz;
@@ -216,20 +300,19 @@ export class Weapons {
       const x = o.x + dir.x * t, y = o.y + dir.y * t, z = o.z + dir.z * t;
       if (y < heightAt(x, z)) { best = t; kind = 'ground'; break; }
     }
-    // soldiers: limb capsules from the live animated skeleton
+    // soldiers (and corpses): limb capsules from the live skeleton
     if (this.enemies) {
       const eh = this.enemies.raycast(o, dir, Math.min(best, 500));
       if (eh && eh.t < best) {
-        const killed = this.enemies.damage(eh.e, def.damage, dir, eh.head);
-        this.spawnImpact(o.clone().addScaledVector(dir, eh.t), 'flesh', eh.t);
-        this.hitMarker(killed || eh.head);
-        return;
+        const p = o.clone().addScaledVector(dir, eh.t);
+        const fall = def.falloff ? THREE.MathUtils.clamp(1.25 - eh.t / def.falloff, 0.12, 1) : 1;
+        const res = this.enemies.damage(eh.e, def.damage * fall, dir, eh.head, p, (def.force || 3) * fall);
+        this.spawnImpact(p, 'flesh', eh.t, pellet ? 2 : 6, sound);
+        return res === 'kill' || (res === 'hit' && eh.head) ? 2 : res === 'hit' ? 1 : 0;
       }
     }
-    if (best < 500) {
-      hit = o.clone().addScaledVector(dir, best);
-      this.spawnImpact(hit, kind, best);
-    }
+    if (best < 500) this.spawnImpact(o.clone().addScaledVector(dir, best), kind, best, pellet ? 2 : undefined, sound);
+    return 0;
   }
 
   hitMarker(strong) {
@@ -240,9 +323,9 @@ export class Weapons {
     this.click(0.25, 5200);
   }
 
-  spawnImpact(p, kind, dist) {
+  spawnImpact(p, kind, dist, count, sound = true) {
     const color = kind === 'tree' ? 0x8a6a4a : kind === 'flesh' ? 0x5a1d17 : 0x6d5d4c;
-    for (let i = 0; i < (kind === 'tree' ? 4 : 6); i++) {
+    for (let i = 0; i < (count || (kind === 'tree' ? 4 : 6)); i++) {
       const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.puffTex, color, transparent: true, depthWrite: false, opacity: 0.8 }));
       s.position.copy(p);
       s.userData = {
@@ -254,7 +337,7 @@ export class Weapons {
       this.impacts.push(s);
     }
     // impact sound arrives later at distance
-    if (this.effects.audio && dist > 15) {
+    if (sound && this.effects.audio && dist > 15) {
       const { ctx } = this.effects.audio;
       const t0 = ctx.currentTime + dist / 343;
       this.noiseBurst(t0, 0.06, 2500, Math.min(0.25, 6 / dist));
@@ -269,9 +352,10 @@ export class Weapons {
     this.reloadTotal = this.reloading;
     // sound cues through the reload
     if (def.perRound) {
-      this.boltSound();
-      for (let i = 0; i < rounds; i++) setTimeout(() => this.click(0.25, 1800), (0.5 + i * def.perRound) * 1000);
-      setTimeout(() => this.boltSound(), (this.reloading - 0.3) * 1000);
+      const sg = this.current === 'shotgun';
+      if (!sg) this.boltSound();
+      for (let i = 0; i < rounds; i++) setTimeout(() => this.click(sg ? 0.35 : 0.25, sg ? 900 : 1800), (0.5 + i * def.perRound) * 1000);
+      setTimeout(() => (sg ? this.pumpSound() : this.boltSound()), (this.reloading - 0.3) * 1000);
     } else {
       setTimeout(() => this.click(0.4, 900), 400);
       setTimeout(() => this.click(0.5, 1300), 1400);
@@ -323,6 +407,9 @@ export class Weapons {
     if (kind === 'rifle') {
       this.noiseBurst(t, 0.09, 1800, 0.9, 'bandpass', 0.5);
       this.noiseBurst(t, 0.25, 350, 0.9, 'lowpass', 0.6);
+    } else if (kind === 'shotgun') {
+      this.noiseBurst(t, 0.1, 1100, 1.2, 'bandpass', 0.8);
+      this.noiseBurst(t, 0.5, 160, 1.5, 'lowpass', 1.0);
     } else {
       this.noiseBurst(t, 0.12, 1400, 1.2, 'bandpass', 0.9);
       this.noiseBurst(t, 0.6, 220, 1.3, 'lowpass', 1.0);
@@ -332,6 +419,12 @@ export class Weapons {
   click(vol = 0.3, freq = 3000) {
     if (!this.effects.audio) return;
     this.noiseBurst(this.effects.audio.ctx.currentTime, 0.03, freq, vol, 'bandpass');
+  }
+
+  pumpSound() {
+    if (!this.effects.audio) return;
+    const t = this.effects.audio.ctx.currentTime;
+    this.noiseBurst(t, 0.06, 1400, 0.45); this.noiseBurst(t + 0.16, 0.06, 1900, 0.45);
   }
 
   boltSound() {
@@ -402,6 +495,13 @@ export class Weapons {
       if (this.current === 'mosin' && this.cooldown > 0.2) {
         const k = 1 - (this.cooldown - 0.2) / (def.interval - 0.2);
         boltRoll = Math.sin(Math.min(1, Math.max(0, k)) * Math.PI) * (1 - this.ads);
+      }
+      // racking the pump: the gun dips and rocks back
+      if (this.current === 'shotgun' && this.cooldown > 0.2 && this.cooldown < def.interval - 0.15) {
+        const k = 1 - (this.cooldown - 0.2) / (def.interval - 0.35);
+        const pump = Math.sin(Math.min(1, Math.max(0, k)) * Math.PI);
+        pos.z += pump * 0.04; pos.y -= pump * 0.015;
+        boltRoll = pump * 0.25;
       }
       m.position.copy(pos);
       m.rotation.set(this.recoil * 0.06 + sw * 0.6 + rl * 0.3 - sprintPose * 0.25,

@@ -59,6 +59,13 @@
     #dead { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(40,8,6,.7); }
     #dead.hidden { display: none; }
     #dead h1 { font-size: 34px; }
+    #prompt { position: absolute; left: 50%; top: calc(50% + 48px); transform: translateX(-50%); font-size: 14px;
+      letter-spacing: .04em; color: var(--fg); text-shadow: 0 1px 3px rgba(0,0,0,.8); opacity: 0; transition: opacity .12s; white-space: nowrap; }
+    #prompt.on { opacity: 1; }
+    #prompt kbd { background: rgba(0,0,0,.45); margin-right: 6px; }
+    #toast { position: absolute; left: 50%; bottom: 90px; transform: translateX(-50%); font-size: 13px; letter-spacing: .12em;
+      text-transform: uppercase; color: var(--accent); text-shadow: 0 1px 3px rgba(0,0,0,.8); opacity: 0; transition: opacity .3s; }
+    #toast.on { opacity: 1; }
     #scope svg { position: absolute; left: 50%; top: 50%; width: 72vmin; height: 72vmin; transform: translate(-50%, -50%); }
   </style>
   <script type="importmap">
@@ -75,6 +82,7 @@
   <div id="hud" class="hidden">
     <div id="dot"></div><div id="hit"></div><div id="fps"></div>
     <div id="hostiles"></div>
+    <div id="prompt"></div><div id="toast"></div>
     <div id="healthBox"><div class="lbl">Health</div><div id="health">100</div></div>
     <div id="ammoBox"><div id="weapon"></div><div id="ammo"></div></div>
   </div>
@@ -104,8 +112,9 @@
         <kbd>C</kbd><span>Crouch</span>
         <kbd>Space</kbd><span>Jump</span>
         <kbd>LMB</kbd><span>Fire (F without mouse lock)</span>
-        <kbd>RMB</kbd><span>Aim / scope</span>
-        <kbd>1 2</kbd><span>M4A1 · Mosin (or wheel)</span>
+        <kbd>RMB</kbd><span>Aim / scope (click to toggle)</span>
+        <kbd>1 2 3</kbd><span>M4A1 · Mosin · Shotgun (or wheel)</span>
+        <kbd>E</kbd><span>Pick up a dropped weapon or its ammo</span>
         <kbd>R</kbd><span>Reload</span>
         <kbd>Esc</kbd><span>Pause</span>
       </div>

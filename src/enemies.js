@@ -9,6 +9,9 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { manager } from './assets.js';
 import { HALF, heightAt, mulberry32 } from './world.js';
+import { Ragdoll, RAGDOLL_BONES } from './ragdoll.js';
+import { Drops } from './drops.js';
+import { loadShotgun, boneMesh, BONE_MUZZLE } from './shotgun.js';
 
 const loader = new GLTFLoader(manager);
 const D2R = Math.PI / 180;
@@ -20,6 +23,9 @@ const SIGHT = 95;               // metres; the fog hides anything further
 const MAG = 30;
 const BURST_INTERVAL = 0.11;
 const PLAYER_HIT_DAMAGE = 14;
+// shotgunners: pump-action, close range
+const SG_MAG = 6, SG_INTERVAL = 0.85, SG_RANGE = 26, SG_DAMAGE = 42;
+const SHOTGUN_SHARE = 0.3;
 
 // hitbox capsules between bones (radius in metres)
 const SEGMENTS = [
@@ -29,7 +35,7 @@ const SEGMENTS = [
   ['CC_Base_Hip', 'CC_Base_R_Calf', 0.13], ['CC_Base_R_Calf', 'CC_Base_R_Foot', 0.1],
   ['CC_Base_L_Upperarm', 'CC_Base_L_Hand', 0.08], ['CC_Base_R_Upperarm', 'CC_Base_R_Hand', 0.08],
 ];
-const BONES = [...new Set(SEGMENTS.flatMap(([a, b]) => [a, b]).concat(['Weapon_Root']))];
+const BONES = [...new Set(SEGMENTS.flatMap(([a, b]) => [a, b]).concat(['Weapon_Root'], RAGDOLL_BONES))];
 
 // closest distance between ray (o + d t, t in [0,tMax]) and segment a-b; returns {dist, t}
 const _u = new THREE.Vector3(), _w = new THREE.Vector3(), _p = new THREE.Vector3(), _q = new THREE.Vector3();
@@ -57,6 +63,7 @@ export class Enemies {
     this.waveTimer = 0;
     this.rng = mulberry32(4242);
     this.ready = false;
+    this.drops = new Drops(scene);
 
     // tree collision + line-of-sight grid
     this.colliders = colliders;
@@ -73,7 +80,9 @@ export class Enemies {
 
     const soldier = new Promise((res, rej) => loader.load('./models/soldier_m4.glb', res, undefined, rej));
     const rifle = new Promise((res) => loader.load('./models/vm_m4.glb', res, undefined, () => res(null)));
-    Promise.all([soldier, rifle]).then(([g, vm]) => {
+    const shotgun = loadShotgun().catch((e) => { console.warn('shotgun failed to load', e); return null; });
+    Promise.all([soldier, rifle, shotgun]).then(([g, vm, sg]) => {
+      this.shotgun = sg;
       const mats = {};
       if (vm) vm.scene.traverse((o) => { if (o.isMesh) mats[o.material.name] = o.material; });
       g.scene.traverse((o) => {
@@ -91,6 +100,7 @@ export class Enemies {
       for (const c of g.animations) c.tracks = c.tracks.filter((t) => !armature || !t.name.startsWith(armature.name + '.'));
       this.clips = Object.fromEntries(g.animations.map((c) => [c.name, c]));
       this.prepareMuzzle(g.scene);
+      this.prepareRifleProp(g.scene);
       this.ready = true;
       this.startWave();
     }).catch((e) => console.warn('enemy model failed to load', e));
@@ -117,6 +127,37 @@ export class Enemies {
     this.muzzleLocal.copy(best);
   }
 
+  // Static copy of the rifle in Weapon_Root space (the bind pose), used for the
+  // gun a dead soldier drops: same geometry and materials, no skinning.
+  prepareRifleProp(root) {
+    root.updateMatrixWorld(true);
+    this.rifleParts = [];
+    root.traverse((o) => {
+      if (!o.isSkinnedMesh || !/^(M4A1|556)$/.test(o.material.name)) return;
+      const sk = o.skeleton, bi = sk.bones.findIndex((b) => b.name === 'Weapon_Root');
+      if (bi < 0) return;
+      const m = new THREE.Matrix4().multiplyMatrices(sk.boneInverses[bi], o.bindMatrix);
+      const g = new THREE.BufferGeometry();
+      for (const k of ['position', 'normal', 'uv']) if (o.geometry.attributes[k]) g.setAttribute(k, o.geometry.attributes[k].clone());
+      if (o.geometry.index) g.setIndex(o.geometry.index.clone());
+      g.applyMatrix4(m);
+      g.computeBoundingSphere();
+      this.rifleParts.push({ geometry: g, material: o.material });
+    });
+  }
+
+  rifleProp() {
+    const grp = new THREE.Group();
+    for (const p of this.rifleParts) grp.add(new THREE.Mesh(p.geometry, p.material));
+    return grp;
+  }
+
+  // visit tree circles around x, z (ragdoll collisions)
+  treesNear(x, z, cb) {
+    const cx = Math.floor(x / this.CELL), cz = Math.floor(z / this.CELL);
+    for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (const c of this.grid.get(`${cx + i},${cz + j}`) || []) cb(c);
+  }
+
   // ------------------------------------------------------------------ waves
   startWave() {
     this.wave++;
@@ -129,7 +170,9 @@ export class Enemies {
         z = -35 - this.rng() * 105;
         tries++;
       } while (tries < 30 && (Math.hypot(x - ppos.x, z - ppos.z) < 65 || this.blocked(x, z)));
-      this.spawn(x, z);
+      // a share of each wave carries pump shotguns
+      const sg = this.shotgun && (i < Math.max(1, Math.round(n * SHOTGUN_SHARE)));
+      this.spawn(x, z, sg ? 'shotgun' : 'm4');
     }
     this.updateHud();
   }
@@ -137,6 +180,7 @@ export class Enemies {
   reset() {
     for (const e of this.list) { this.scene.remove(e.root); this.scene.remove(e.flash); }
     this.list = [];
+    this.drops.clear();
     this.wave = 0;
     this.waveTimer = 0;
     if (this.ready) this.startWave();
@@ -148,14 +192,24 @@ export class Enemies {
     return false;
   }
 
-  spawn(x, z) {
+  spawn(x, z, weapon = 'm4') {
     const root = SkeletonUtils.clone(this.template);
     const y = heightAt(x, z);
     root.position.set(x, y, z);
     root.rotation.y = (this.rng() - 0.5) * 1.5;   // the model faces +z: roughly toward the trench
     this.scene.add(root);
     const bones = {};
-    root.traverse((o) => { if (o.isBone && BONES.includes(o.name)) bones[o.name] = o; });
+    const gunMeshes = [];
+    root.traverse((o) => {
+      if (o.isBone && BONES.includes(o.name)) bones[o.name] = o;
+      if (o.isSkinnedMesh && /^(M4A1|556)$/.test(o.material.name)) gunMeshes.push(o);
+    });
+    let gun = null;
+    if (weapon === 'shotgun' && bones.Weapon_Root) {
+      for (const m of gunMeshes) m.visible = false;
+      gun = boneMesh(this.shotgun);
+      bones.Weapon_Root.add(gun);
+    }
     const mixer = new THREE.AnimationMixer(root);
     const actions = {};
     for (const [name, clip] of Object.entries(this.clips)) {
@@ -169,7 +223,8 @@ export class Enemies {
       state: 'patrol', stance: 'stand',
       aware: 0, lastSeen: null, seeT: 0, losT: this.rng() * 0.3,
       target: null, waitT: this.rng() * 3,
-      mag: MAG, burst: 0, shotT: 0, engageT: 0, coverT: 0,
+      weapon, gun, gunMeshes, ragdoll: null,
+      mag: weapon === 'shotgun' ? SG_MAG : MAG, burst: 0, shotT: 0, engageT: 0, coverT: 0,
       yaw: root.rotation.y, wantYaw: root.rotation.y, skill: 0.75 + this.rng() * 0.5,
       flash: null, flashT: 0,
     };
@@ -209,7 +264,7 @@ export class Enemies {
   muzzle(e, out, dir) {
     const b = e.bones.Weapon_Root;
     if (!b) return out.copy(e.root.position).add(new THREE.Vector3(0, 1.3, 0));
-    out.copy(this.muzzleLocal).applyMatrix4(b.matrixWorld);
+    out.copy(e.weapon === 'shotgun' ? BONE_MUZZLE : this.muzzleLocal).applyMatrix4(b.matrixWorld);
     if (dir) dir.copy(out).sub(b.getWorldPosition(new THREE.Vector3())).normalize();
     return out;
   }
@@ -219,9 +274,9 @@ export class Enemies {
     let best = null;
     const a = new THREE.Vector3(), b = new THREE.Vector3(), h = new THREE.Vector3();
     for (const e of this.list) {
-      if (e.dead) continue;
-      // cheap reject: distance from ray to the soldier's root
-      const toRoot = _w.subVectors(e.root.position, o);
+      if (e.dead && !e.ragdoll) continue;
+      // cheap reject: distance from ray to the soldier's root (a corpse's hips)
+      const toRoot = _w.subVectors(e.ragdoll ? e.ragdoll.center : e.root.position, o);
       const along = toRoot.dot(d);
       if (along < 0 || along > maxT + 3) continue;
       if (toRoot.addScaledVector(d, -along).lengthSq() > 9) continue;
@@ -265,30 +320,66 @@ export class Enemies {
   }
 
   // ------------------------------------------------------------------ damage
-  damage(e, amount, fromDir, head) {
-    if (e.dead) return false;
+  // Returns 'kill', 'hit' or 'corpse'. point: where the round struck; force:
+  // how hard it shoves the body (m/s on the struck joint).
+  damage(e, amount, fromDir, head, point, force = 3) {
+    if (e.dead) {
+      if (e.ragdoll) e.ragdoll.impulse(point, fromDir, force * 0.8);
+      return 'corpse';
+    }
     e.hp -= amount * (head ? 3 : 1);
     e.aware = 1;
     e.lastSeen = this.playerPos ? this.playerPos.clone() : null;
-    if (e.hp <= 0) { this.kill(e, fromDir); return true; }
+    if (e.hp <= 0) { this.kill(e, fromDir, point, force); return 'kill'; }
     // getting shot: dive for cover
     if (e.stance === 'stand' && this.rng() < 0.6) { e.stance = this.rng() < 0.5 ? 'duck' : 'prone'; e.coverT = 2 + this.rng() * 2; e.burst = 0; }
-    return false;
+    return 'hit';
   }
 
-  kill(e, fromDir) {
+  kill(e, fromDir, point, force = 3) {
     e.dead = true; e.deadT = 0;
     e.flash.material.opacity = 0;
-    // freeze the pose and topple away from the shot
-    e.fallFrom = e.root.quaternion.clone();
-    const away = fromDir ? new THREE.Vector3(fromDir.x, 0, fromDir.z).normalize() : new THREE.Vector3(0, 0, -1);
-    const axis = new THREE.Vector3().crossVectors(UP, away).normalize();
-    e.fallTo = new THREE.Quaternion().setFromAxisAngle(axis, (e.stance === 'prone' ? 8 : 86) * D2R).multiply(e.fallFrom);
-    e.fallY = e.root.position.y;
-    e.mixer.timeScale = 0.25;
-    setTimeout(() => { e.mixer.timeScale = 0; }, 350);
+    e.flashT = 0;
+    e.root.updateMatrixWorld(true);
+    const dir = fromDir ? fromDir.clone() : new THREE.Vector3(0, 0, -1);
+
+    // body velocity at the moment of death (running soldiers keep momentum)
+    const facing = new THREE.Vector3(Math.sin(e.yaw), 0, Math.cos(e.yaw));
+    const vel = facing.clone().multiplyScalar(e.anim === 'Run' ? RUN_SPEED * 0.8 : e.anim === 'Walk' ? WALK_SPEED * 0.6 : 0);
+    e.ragdoll = new Ragdoll(e.root, e.bones, (x, z, cb) => this.treesNear(x, z, cb), vel);
+    e.ragdoll.impulse(point, dir, force);
+    // buckle the knees so a standing body folds instead of toppling like a plank
+    if (e.stance !== 'prone') {
+      const kn = facing.clone().multiplyScalar(0.9 + this.rng() * 0.6).add(new THREE.Vector3(0, -0.4, 0));
+      e.ragdoll.kick('lca', kn); e.ragdoll.kick('rca', kn.clone().multiplyScalar(0.7 + this.rng() * 0.6));
+      e.ragdoll.kick('hip', new THREE.Vector3(0, -0.6, 0));
+    }
+    for (const a of Object.values(e.actions)) a.stop();
+
+    this.dropWeapon(e, dir);
     this.updateHud();
     if (this.living() === 0) this.waveTimer = 8;
+  }
+
+  // the gun leaves the dead man's hands and tumbles to the ground
+  dropWeapon(e, dir) {
+    const bone = e.bones.Weapon_Root;
+    if (!bone) return;
+    let obj;
+    if (e.weapon === 'shotgun' && e.gun) { obj = e.gun; this.scene.attach(obj); }
+    else {
+      if (!this.rifleParts || !this.rifleParts.length) return;
+      for (const m of e.gunMeshes) m.visible = false;
+      obj = this.rifleProp();
+      bone.matrixWorld.decompose(obj.position, obj.quaternion, obj.scale);
+      this.scene.add(obj);
+    }
+    e.gun = null;
+    const v = new THREE.Vector3(dir.x, 0, dir.z).normalize().multiplyScalar(0.8 + this.rng() * 1.4);
+    v.y = 1.2 + this.rng() * 1.5;
+    v.x += (this.rng() - 0.5) * 1.2; v.z += (this.rng() - 0.5) * 1.2;
+    const ammo = e.weapon === 'shotgun' ? Math.max(2, e.mag) + 4 + Math.floor(this.rng() * 5) : Math.max(8, e.mag) + Math.floor(this.rng() * 20);
+    this.drops.spawn(obj, e.weapon, ammo, v);
   }
 
   living() { return this.list.reduce((n, e) => n + (e.dead ? 0 : 1), 0); }
@@ -311,11 +402,18 @@ export class Enemies {
   }
 
   // ------------------------------------------------------------------ audio
-  gunshot(dist) {
+  gunshot(dist, shotgun) {
     const w = this.weapons;
     if (!this.effects.audio) return;
     const t0 = this.effects.audio.ctx.currentTime + dist / 343;
     const vol = Math.min(0.9, 22 / Math.max(8, dist));
+    if (shotgun) {
+      w.noiseBurst(t0, 0.1, Math.max(400, 1300 - dist * 8), vol * 0.9, 'bandpass', 0.8);
+      w.noiseBurst(t0, 0.45, 200, vol * 1.2, 'lowpass', 0.9);
+      w.noiseBurst(t0 + 0.32, 0.05, 1800, vol * 0.25);     // racking the pump
+      w.noiseBurst(t0 + 0.48, 0.05, 1500, vol * 0.25);
+      return;
+    }
     w.noiseBurst(t0, 0.08, Math.max(500, 1800 - dist * 8), vol * 0.8, 'bandpass', 0.7);
     w.noiseBurst(t0, 0.3, 300, vol, 'lowpass', 0.8);
   }
@@ -337,23 +435,20 @@ export class Enemies {
         this.startWave();
       }
     }
+    this.drops.update(dt);
     const eye = player.eye;
     this.flashLight.intensity = Math.max(0, this.flashLight.intensity - dt * 500);
     const tmp = new THREE.Vector3(), head = new THREE.Vector3();
 
     for (const e of this.list) {
       const dist = e.root.position.distanceTo(player.pos);
-      // distant soldiers animate at a lower rate
-      e.mixer.update(dt);
-      if (e.flashT > 0) { e.flashT -= dt; e.flash.material.opacity = e.flashT > 0 ? 1 : 0; }
-
       if (e.dead) {
         e.deadT += dt;
-        const k = Math.min(1, e.deadT / 0.7), ease = k * k;
-        e.root.quaternion.slerpQuaternions(e.fallFrom, e.fallTo, ease);
-        e.root.position.y = e.fallY - ease * (e.stance === 'prone' ? 0 : 0.08);
+        if (e.ragdoll) e.ragdoll.update(dt);
         continue;
       }
+      e.mixer.update(dt);
+      if (e.flashT > 0) { e.flashT -= dt; e.flash.material.opacity = e.flashT > 0 ? 1 : 0; }
       if (!player.alive) { this.idle(e, dt); continue; }
 
       // ---- perception (throttled)
@@ -438,13 +533,14 @@ export class Enemies {
     e.state = 'combat';
     e.engageT += dt;
     const p = e.root.position;
+    const sg = e.weapon === 'shotgun';
 
     // reloading takes priority
     if (e.reloading > 0) {
       e.reloading -= dt;
       if (e.stance === 'prone') this.play(e, 'Prone', 0.3);
       else this.play(e, 'Reload', 0.2);
-      if (e.reloading <= 0) e.mag = MAG;
+      if (e.reloading <= 0) e.mag = sg ? SG_MAG : MAG;
       e.wantYaw = Math.atan2(e.lastSeen.x - p.x, e.lastSeen.z - p.z);
       return;
     }
@@ -457,16 +553,17 @@ export class Enemies {
       if (this.moveTo(e, dt, e.moveTarget, RUN_SPEED) || e.moveT > 4.5) {
         e.moveT = 0;
         e.moveTarget = null;
-        e.stance = dist > 55 && this.rng() < 0.4 ? 'prone' : 'stand';
+        e.stance = sg ? 'stand' : dist > 55 && this.rng() < 0.4 ? 'prone' : 'stand';
       }
       return;
     }
 
-    // too far: close the distance
-    if (dist > 75) {
+    // too far: close the distance (shotgunners rush in much closer)
+    if (dist > (sg ? SG_RANGE : 75)) {
       const dir = new THREE.Vector3().subVectors(player.pos, p).setY(0).normalize();
-      const side = new THREE.Vector3(dir.z, 0, -dir.x).multiplyScalar((this.rng() - 0.5) * 30);
-      e.moveTarget = p.clone().addScaledVector(dir, 20 + this.rng() * 15).add(side);
+      const side = new THREE.Vector3(dir.z, 0, -dir.x).multiplyScalar((this.rng() - 0.5) * (sg ? 10 : 30));
+      const run = sg ? Math.min(dist - 8, 14 + this.rng() * 10) : 20 + this.rng() * 15;
+      e.moveTarget = p.clone().addScaledVector(dir, run).add(side);
       return;
     }
 
@@ -489,20 +586,20 @@ export class Enemies {
         e.moveTarget = p.clone().add(side).addScaledVector(dir, this.rng() * 8);
         return;
       }
-      if (r < 0.4 && e.stance !== 'prone') { e.stance = 'duck'; e.coverT = 0.8 + this.rng() * 1.6; e.burst = 3 + Math.floor(this.rng() * 4); return; }
-      e.burst = 3 + Math.floor(this.rng() * 5);
-      e.shotT = 0.35;     // shoulder the rifle before the first round
+      if (r < (sg ? 0.25 : 0.4) && e.stance !== 'prone') { e.stance = 'duck'; e.coverT = 0.8 + this.rng() * 1.6; e.burst = sg ? 2 : 3 + Math.floor(this.rng() * 4); return; }
+      e.burst = sg ? 2 + Math.floor(this.rng() * 3) : 3 + Math.floor(this.rng() * 5);
+      e.shotT = sg ? 0.45 : 0.35;     // shoulder the gun before the first round
       if (e.stance === 'duck') e.stance = 'stand';
     }
 
-    this.play(e, e.stance === 'prone' ? 'Prone' : 'Fire', 0.15, e.stance === 'prone' ? 1 : 2.4);
+    this.play(e, e.stance === 'prone' ? 'Prone' : 'Fire', 0.15, e.stance === 'prone' ? 1 : sg ? 1 : 2.4);
     e.shotT -= dt;
     if (e.shotT <= 0 && e.canSee !== false) {
-      e.shotT = BURST_INTERVAL * (0.9 + this.rng() * 0.4);
+      e.shotT = (sg ? SG_INTERVAL : BURST_INTERVAL) * (0.9 + this.rng() * 0.4);
       e.burst--;
       this.fire(e, dist, player);
       if (e.burst <= 0) { e.coverT = 0.6 + this.rng() * 1.4; if (e.stance === 'stand' && this.rng() < 0.5) e.stance = 'duck'; }
-      if (e.mag <= 0) { e.reloading = 3.0; e.burst = 0; this.play(e, e.stance === 'prone' ? 'Prone' : 'Reload', 0.2); }
+      if (e.mag <= 0) { e.reloading = sg ? 4.2 : 3.0; e.burst = 0; this.play(e, e.stance === 'prone' ? 'Prone' : 'Reload', 0.2); }
     } else if (e.canSee === false && e.shotT <= 0) {
       // lost sight: wait a moment then go look
       e.burst = 0;
@@ -517,16 +614,19 @@ export class Enemies {
     this.muzzle(e, e.flash.position);
     this.flashLight.position.copy(e.flash.position);
     this.flashLight.intensity = 18;
-    this.gunshot(dist);
+    const sg = e.weapon === 'shotgun';
+    this.gunshot(dist, sg);
     // hit chance: distance, the player's stance and motion, how long they've been engaged
-    let p = THREE.MathUtils.clamp(0.5 - dist / 170, 0.05, 0.45) * e.skill;
+    let p = sg ? THREE.MathUtils.clamp(0.95 - dist / 32, 0.02, 0.8) * e.skill
+      : THREE.MathUtils.clamp(0.5 - dist / 170, 0.05, 0.45) * e.skill;
     if (player.crouch) p *= 0.6;
     if (player.moving) p *= player.sprinting ? 0.5 : 0.75;
     if (e.stance === 'prone') p *= 1.2;
     p *= Math.min(1, 0.35 + e.engageT / 6);
     if (this.rng() < p) {
-      setTimeout(() => this.onPlayerHit(PLAYER_HIT_DAMAGE * (0.8 + this.rng() * 0.5), e.root.position.clone()), (dist / 900) * 1000);
-    } else if (dist < 130 && this.rng() < 0.5) {
+      const dmg = sg ? SG_DAMAGE * THREE.MathUtils.clamp(1.15 - dist / 30, 0.15, 1) : PLAYER_HIT_DAMAGE;
+      setTimeout(() => this.onPlayerHit(dmg * (0.8 + this.rng() * 0.5), e.root.position.clone()), (dist / 900) * 1000);
+    } else if (dist < (sg ? 40 : 130) && this.rng() < 0.5) {
       setTimeout(() => this.crack(), (dist / 900) * 1000);
     }
   }
