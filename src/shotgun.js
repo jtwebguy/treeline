@@ -100,6 +100,6 @@ export const HAND_POSE = {
     wrist: new THREE.Vector3(-0.03, -0.11, -0.27),
     fingers: new THREE.Vector3(0.45, 0.25, -0.85), palm: new THREE.Vector3(0.35, 0.93, 0),
     elbow: new THREE.Vector3(-0.45, -0.55, 0.7),
-    curl: { index: 0.5, middle: 0.5, ring: 0.5, pinky: 0.5, thumb: [-1.1, -0.75, -0.5] },
+    curl: { index: 0.5, middle: 0.5, ring: 0.5, pinky: 0.5, thumb: [0, 0.05, 0.1] },
   },
 };

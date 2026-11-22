@@ -20,8 +20,8 @@ const J = {
   hip: ['CC_Base_Hip', 0.13], chest: ['CC_Base_Spine02', 0.14], head: ['CC_Base_Head', 0.12],
   lua: ['CC_Base_L_Upperarm', 0.06], lfa: ['CC_Base_L_Forearm', 0.05], lh: ['CC_Base_L_Hand', 0.05],
   rua: ['CC_Base_R_Upperarm', 0.06], rfa: ['CC_Base_R_Forearm', 0.05], rh: ['CC_Base_R_Hand', 0.05],
-  lth: ['CC_Base_L_Thigh', 0.09], lca: ['CC_Base_L_Calf', 0.06], lft: ['CC_Base_L_Foot', 0.05],
-  rth: ['CC_Base_R_Thigh', 0.09], rca: ['CC_Base_R_Calf', 0.06], rft: ['CC_Base_R_Foot', 0.05],
+  lth: ['CC_Base_L_Thigh', 0.09], lca: ['CC_Base_L_Calf', 0.06], lft: ['CC_Base_L_Foot', 0.07],
+  rth: ['CC_Base_R_Thigh', 0.09], rca: ['CC_Base_R_Calf', 0.06], rft: ['CC_Base_R_Foot', 0.07],
 };
 export const RAGDOLL_BONES = [...Object.values(J).map((j) => j[0]), 'CC_Base_NeckTwist01'];
 const TORSO = ['hip', 'chest', 'lua', 'rua', 'lth', 'rth'];
@@ -35,6 +35,7 @@ const APART = [['lca', 'rca', 0.13], ['lft', 'rft', 0.12], ['lca', 'rft', 0.1], 
 // limb joints kept out of the torso (a capsule round the hip -> chest line)
 const OUTSIDE = ['lfa', 'lh', 'rfa', 'rh', 'lca', 'lft', 'rca', 'rft'];
 const TORSO_R = 0.1;
+const HYPER = Math.tan(0.16);   // ~9 degrees of hyperextension allowed at knees and elbows
 
 // Ranges of motion of a limb's direction in the torso frame, as limits on
 // its components: out = away from the body's midline, up, fwd = the way the
@@ -99,7 +100,9 @@ export class Ragdoll {
       const b = bones[n], bp = b.getWorldPosition(new THREE.Vector3());
       return { b, k, q0: b.getWorldQuaternion(new THREE.Quaternion()), d0: this.p[k].pos.clone().sub(bp).normalize() };
     });
-    this.t = 0; this.stillT = 0; this.asleep = false;
+    // each limb's front, so a hinge keeps a consistent side when raised overhead
+    this.fronts = LIMBS.map(() => this.fwd.clone().applyQuaternion(this.frame0));
+    this.t = 0; this.stillT = 0; this.asleep = false; this.drag = 0.995;
     this.center = this.p.hip.pos;
   }
 
@@ -115,7 +118,7 @@ export class Ragdoll {
 
   // push the body: everything a little, the joint nearest the hit a lot
   impulse(point, dir, force) {
-    this.asleep = false; this.stillT = 0; this.t = Math.min(this.t, 6);
+    this.asleep = false; this.stillT = 0; this.t = Math.min(this.t, 1);
     let best = null, bd = Infinity;
     for (const p of Object.values(this.p)) {
       const d = point ? p.pos.distanceToSquared(point) : 0;
@@ -132,20 +135,30 @@ export class Ragdoll {
     if (this.asleep) return;
     this.t += dt;
     const steps = Math.min(4, Math.ceil(dt / H));
-    let moved = 0;
-    for (let s = 0; s < steps; s++) moved = Math.max(moved, this.step());
-    // sleep once the body has been still for a while
-    this.stillT = moved < 0.15 * H ? this.stillT + dt : 0;
-    if ((this.t > 1.5 && this.stillT > 0.6) || this.t > 12) this.asleep = true;
+    const h0 = this.p.hip.pos.clone(), c0 = this.p.chest.pos.clone();
+    // a body comes to rest: after the first second the air drag rises
+    // steeply, so limbs that are still being argued over by the joint limits
+    // settle instead of vibrating
+    this.drag = THREE.MathUtils.lerp(0.995, 0.86, THREE.MathUtils.smoothstep(this.t, 1, 2.6));
+    for (let s = 0; s < steps; s++) this.step();
+    // sleep once the trunk has been still for a while (judged by the hips and
+    // chest: a twitching hand must not keep the whole body awake), and in any
+    // case a few seconds after the last hit
+    const moved = Math.max(h0.distanceTo(this.p.hip.pos), c0.distanceTo(this.p.chest.pos)) / Math.max(dt, 1e-4);
+    this.stillT = moved < 0.12 ? this.stillT + dt : 0;
+    if ((this.t > 1.5 && this.stillT > 0.5) || this.t > 6) this.asleep = true;
     this.pose();
   }
 
   step() {
-    let maxV = 0;
-    for (const p of Object.values(this.p)) {
-      _v.subVectors(p.pos, p.prev).multiplyScalar(0.995);
+    let maxV = 0, e0 = 0;
+    const ps = Object.values(this.p);
+    for (const p of ps) {
+      _v.subVectors(p.pos, p.prev).multiplyScalar(this.drag);
       p.prev.copy(p.pos);
       p.pos.add(_v); p.pos.y -= G * H * H;
+      _v.y -= G * H * H;
+      e0 += _v.lengthSq();
       maxV = Math.max(maxV, _v.length());
     }
     for (let it = 0; it < ITER; it++) {
@@ -154,6 +167,17 @@ export class Ragdoll {
       for (const [a, b, min] of APART) this.solve(this.p[a], this.p[b], min, 0.5, true);
       this.limits();
       this.collide();
+    }
+    // Constraints and joint limits only move joints back into place: they can
+    // take energy out of the body but must never add it. When the limits fight
+    // the sticks they do (each correction becomes velocity in the Verlet
+    // step), and that was what made corpses jitter, slide and fly. So if the
+    // solve left the body moving faster than it went in, scale it back.
+    let e1 = 0;
+    for (const p of ps) e1 += _v.subVectors(p.pos, p.prev).lengthSq();
+    if (e1 > e0 && e1 > 1e-12) {
+      const k = Math.sqrt(0.97 * e0 / e1);
+      for (const p of ps) p.prev.lerp(p.pos, 1 - k);
     }
     return maxV;
   }
@@ -170,11 +194,11 @@ export class Ragdoll {
   limits() {
     const P = this.p;
     this.frame(_fq); _fqi.copy(_fq).invert();
-    for (const [up, mid, end, rom, bend, play] of LIMBS) {
+    LIMBS.forEach(([up, mid, end, rom, bend, play], i) => {
       const side = up[0] === 'l' ? -1 : 1;
       this.range(P[up], P[mid], ROM[rom], side);
-      this.hinge(P[up], P[mid], P[end], bend, play);
-    }
+      this.hinge(P[up], P[mid], P[end], bend, play, this.fronts[i]);
+    });
     this.range(P.chest, P.head, ROM.neck, 0);
     this.keepOut();
   }
@@ -187,10 +211,26 @@ export class Ragdoll {
     _t.divideScalar(len).applyQuaternion(_fqi);                // torso-frame direction
     const fsign = this.fwd.z < 0 ? -1 : 1;
     const out = side ? _t.x * side : _t.x, up = _t.y, fwd = _t.z * fsign;
-    const cl = (v, [lo, hi]) => Math.min(hi, Math.max(lo, v));
-    const o2 = cl(out, rom.out), u2 = cl(up, rom.up), f2 = cl(fwd, rom.fwd);
-    if (o2 === out && u2 === up && f2 === fwd) return;
-    _t.set(side ? o2 * side : o2, u2, f2 * fsign).normalize().applyQuaternion(_fq);
+    const v = [out, up, fwd], lim = [rom.out, rom.up, rom.fwd];
+    if (v.every((x, i) => x >= lim[i][0] && x <= lim[i][1])) return;
+    // Clamp the components, then restore unit length by scaling only the ones
+    // that were not clamped. (Clamping and then normalising all three pushed a
+    // clamped component back out of range, so every call nudged the joint
+    // round the edge of its range: knees orbited the hip forever.)
+    const fixed = [false, false, false];
+    for (let pass = 0; pass < 3; pass++) {
+      let fixedSq = 0, freeSq = 0;
+      for (let i = 0; i < 3; i++) {
+        const c = Math.min(lim[i][1], Math.max(lim[i][0], v[i]));
+        if (c !== v[i]) { v[i] = c; fixed[i] = true; }
+        if (fixed[i]) fixedSq += v[i] * v[i]; else freeSq += v[i] * v[i];
+      }
+      if (fixedSq >= 1 || freeSq < 1e-8) break;
+      const k = Math.sqrt((1 - fixedSq) / freeSq);
+      for (let i = 0; i < 3; i++) if (!fixed[i]) v[i] *= k;
+      if (v.every((x, i) => x >= lim[i][0] - 1e-6 && x <= lim[i][1] + 1e-6)) break;
+    }
+    _t.set(side ? v[0] * side : v[0], v[1], v[2] * fsign).normalize().applyQuaternion(_fq);
     _a.copy(A.pos).addScaledVector(_t, len);
     B.pos.lerp(_a, 0.8);
   }
@@ -199,7 +239,8 @@ export class Ragdoll {
   // The limb's front is the body's front carried along by the limb's swing
   // away from hanging straight down; bend -1 = end swings behind (knee), +1 =
   // in front (elbow); play = radians it may stray sideways from that plane.
-  hinge(A, B, C, bend, play) {
+  // last: this limb's front from the previous call, reused near the singularity
+  hinge(A, B, C, bend, play, last) {
     _t.subVectors(B.pos, A.pos).normalize();                      // upper limb direction
     _s.subVectors(C.pos, B.pos);
     const ls = _s.length();
@@ -207,11 +248,20 @@ export class Ragdoll {
     _s.divideScalar(ls);
     // limb front in world space
     _a.copy(DOWN).applyQuaternion(_fq);
-    _sq.setFromUnitVectors(_a, _t);
-    _b.copy(this.fwd).applyQuaternion(_fq).applyQuaternion(_sq);
+    if (_a.dot(_t) > -0.6) {
+      _sq.setFromUnitVectors(_a, _t);
+      _b.copy(this.fwd).applyQuaternion(_fq).applyQuaternion(_sq);
+    } else {
+      // limb raised overhead: the swing from hanging down is ill-defined there
+      // (an arm straight up flipped its elbow front from one substep to the
+      // next and the elbow snapped round), so carry the last front along
+      _b.copy(last);
+    }
     _b.addScaledVector(_t, -_b.dot(_t));
     if (_b.lengthSq() < 1e-8) return;
-    _b.normalize().multiplyScalar(bend);                         // the way the end should swing
+    _b.normalize();
+    last.copy(_b);
+    _b.multiplyScalar(bend);                                     // the way the end should swing
     // sideways deviation of the lower limb from straight
     const along = _s.dot(_t);
     _c.copy(_s).addScaledVector(_t, -along);
@@ -220,13 +270,40 @@ export class Ragdoll {
     _c.divideScalar(dl);
     const cosA = _c.dot(_b);
     if (cosA >= Math.cos(play)) return;
-    // rotate the bend back to the edge of the allowed wedge, keeping its amount
-    _a.copy(_c).addScaledVector(_b, -cosA);
-    if (_a.lengthSq() < 1e-8) _a.crossVectors(_t, _b);
-    _a.normalize();
-    _c.copy(_b).multiplyScalar(Math.cos(play)).addScaledVector(_a, Math.sin(play));
-    _s.copy(_t).multiplyScalar(along).addScaledVector(_c, dl);
+    // Outside the allowed wedge: move to the nearest allowed bend. Allowed is
+    // the wedge itself (nearest point: its edge, or straight if the bend is
+    // more than 90 degrees past it) plus a few degrees of hyperextension any
+    // way (a body lying flat rests with its hip a little higher than its knee
+    // and foot; without that slack the hinge pushed the foot into the ground,
+    // the ground pushed it back, and legs twitched forever). Taking the nearest
+    // point keeps the correction small and continuous. (Before, a slightly
+    // over-straightened knee was swung all the way round to a full bend: the
+    // foot jumped tens of centimetres in one substep and the Verlet step turned
+    // that into tens of metres per second, which is what launched bodies.)
+    if (dl <= Math.abs(along) * HYPER) return;
+    const ang = Math.acos(Math.max(-1, cosA)) - play;            // how far outside the wedge
+    const toWedge = ang < Math.PI / 2 ? dl * Math.sin(ang) : dl;  // distance to the wedge
+    const allow = Math.abs(along) * HYPER;
+    if (dl - allow < toWedge) {
+      _s.copy(_t).multiplyScalar(along).addScaledVector(_c, allow).normalize();
+    } else {
+      _a.copy(_c).addScaledVector(_b, -cosA);
+      if (_a.lengthSq() < 1e-8) _a.crossVectors(_t, _b);
+      _a.normalize();
+      _c.copy(_b).multiplyScalar(Math.cos(play)).addScaledVector(_a, Math.sin(play));   // wedge edge
+      _s.copy(_t).multiplyScalar(along).addScaledVector(_c, ang < Math.PI / 2 ? dl * Math.cos(ang) : 0).normalize();
+    }
+    this.moveEnd(B, C, ls);
+  }
+
+  // move C toward B + _s * ls, but never into the ground: where a limit and
+  // the ground disagree the ground wins. Otherwise the limit pushed a foot into
+  // the ground, the ground pushed it straight back up, and the sideways part of
+  // every push was left over, so feet crept and legs twitched without end.
+  moveEnd(B, C, ls) {
     _a.copy(B.pos).addScaledVector(_s, ls);
+    const gy = heightAt(_a.x, _a.z) + C.r;
+    if (_a.y < gy) _a.y = gy;
     C.pos.lerp(_a, 0.6);
   }
 
