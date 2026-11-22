@@ -310,10 +310,13 @@ export class Weapons {
       const x = o.x + dir.x * t, y = o.y + dir.y * t, z = o.z + dir.z * t;
       if (y < heightAt(x, z)) { best = t; kind = 'ground'; break; }
     }
+    // drones in the air: shoot one and it blows up where it is
+    const dh = this.drones ? this.drones.raycast(o, dir, Math.min(best, 500)) : null;
+    if (dh) best = dh.t;
     // soldiers (and corpses): limb capsules from the live skeleton
     if (this.enemies) {
       const eh = this.enemies.raycast(o, dir, Math.min(best, 500));
-      if (eh && eh.t < best) {
+      if (eh && (eh.t < best || (dh && eh.t <= dh.t))) {
         const p = o.clone().addScaledVector(dir, eh.t);
         const fall = def.falloff ? THREE.MathUtils.clamp(1.25 - eh.t / def.falloff, 0.12, 1) : 1;
         const res = this.enemies.damage(eh.e, def.damage * fall, dir, eh.head, p, (def.force || 3) * fall);
@@ -321,6 +324,7 @@ export class Weapons {
         return res === 'kill' || (res === 'hit' && eh.head) ? 2 : res === 'hit' ? 1 : 0;
       }
     }
+    if (dh) { this.drones.shootDown(dh.d); return 2; }
     if (best < 500) this.spawnImpact(o.clone().addScaledVector(dir, best), kind, best, pellet ? 2 : undefined, sound);
     return 0;
   }

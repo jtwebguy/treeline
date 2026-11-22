@@ -10,6 +10,7 @@ A first-person three.js walk through a shell-torn Scots pine forest on an easter
 - **Terrain** with 70 shell craters, a zig-zag trench with spoil banks, and a shader that blends forest floor, burnt ground and mud using per-vertex masks.
 - **Props** scattered from real scanned assets: stumps, fallen trunks, boulders, dry branches, ferns, military crates, ammo boxes, jerrycans and tyres along the trench.
 - **Enemy infantry**: waves of soldiers with M4A1s patrol no-man's land north of the trench. They spot you (line of sight through the trees, faster if you sprint or stand tall, slower if you crouch), advance, fire in bursts, duck into cover, go prone, run to new positions and reload. Hits are tested against the soldier's animated limbs, so a crouched or prone enemy is a smaller target; headshots do triple damage. About a third of each wave carries a pump shotgun instead: they close in to ~25 m before firing. Killed soldiers go limp as ragdolls (they keep their running momentum, fold at the knees, fall against trees and the ground, and can be pushed by further shots). The ragdoll keeps to human joint limits: knees and elbows only bend the natural way, and hips, shoulders and neck stay within a real range of motion, and their weapon falls from their hands. Walk up to a dropped gun and press **E** to take it, or to take its ammo if you already carry that weapon. You have 100 health that regenerates after a few seconds out of fire; each cleared wave brings a bigger one.
+- **FPV drones**: one or two kamikaze quadcopters with warheads turn up in every five-minute window. Each picks a target — you or one of the enemy soldiers — cruises in over the treetops (you hear its motors buzz, panned and rising in pitch as it closes), then dives and detonates on contact, or on a tree or the ground. The blast hurts anyone nearby, you and the enemy alike, and throws bodies about. Shoot one down and it explodes in the air. If its target dies first it goes for whoever is nearest.
 - **Atmosphere**: fog, overcast HDRI lighting, smoke columns and embers in fresh craters, falling ash, distant artillery flashes with delayed synthesized booms, wind audio.
 
 ## Play
@@ -43,6 +44,7 @@ The enemy soldier (`models/soldier_m4.glb`) is the project owner's "Mark 1 Olive
 | `src/effects.js` | Smoke, embers, ash, artillery, audio |
 | `src/weapons.js` | Viewmodels, firing, reloads, scope, hitscan, weapon audio |
 | `src/enemies.js` | Enemy soldiers: waves, AI, animation, limb hitboxes, return fire |
+| `src/drones.js` | FPV kamikaze drones: scheduling, targeting you or enemies, flight, buzz audio, blast damage and effects |
 | `src/ragdoll.js` | Verlet ragdoll that takes over a soldier's skeleton on death |
 | `src/drops.js` | Weapons dropped by dead soldiers: falling, settling, pickup lookup |
 | `src/shotgun.js` | Shotgun model: loading, painting, soldier mount, viewmodel, hand grip |

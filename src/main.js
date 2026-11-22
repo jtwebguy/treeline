@@ -7,6 +7,7 @@ import { createProps } from './props.js';
 import { Effects } from './effects.js';
 import { Weapons } from './weapons.js';
 import { Enemies } from './enemies.js';
+import { Drones } from './drones.js';
 import { HALF, TRENCH, heightAt } from './world.js';
 
 // ------------------------------------------------------------------ renderer
@@ -83,6 +84,8 @@ const effects = new Effects(scene, { hemi, fog: scene.fog });
 const weapons = new Weapons({ camera, scene, renderer, effects, colliders: forest.colliders, ui });
 const enemies = new Enemies({ scene, colliders: forest.colliders, weapons, effects, onPlayerHit: (dmg, from) => hurtPlayer(dmg, from) });
 weapons.enemies = enemies;
+const drones = new Drones({ camera, scene, effects, weapons, enemies, onPlayerHit: (dmg, from) => hurtPlayer(dmg, from), onAlert: (msg) => toast(msg) });
+weapons.drones = drones;
 createProps(forest.snappedSpots, (id) => failures.push(id)).then((g) => scene.add(g));
 
 manager.onProgress = (url, done, total) => {
@@ -155,6 +158,7 @@ ui.restart.addEventListener('click', () => {
   spawnPlayer();
   weapons.resetLoadout();
   enemies.reset();
+  drones.reset();
   ui.dead.classList.add('hidden');
   setPlaying(true);
   try { const p = controls.lock(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* drag-look fallback */ }
@@ -306,6 +310,7 @@ renderer.setAnimationLoop(() => {
     player.eye = camera.position;
     player.moving = player.onGround && Math.hypot(player.vel.x, player.vel.z) > 0.5;
     enemies.update(dt, t, player);
+    drones.update(dt, player);
   }
   else { sun.target.position.copy(player.pos); sun.position.copy(player.pos).addScaledVector(SUN_DIR, 120); }
   updatePrompt(dt);
@@ -322,7 +327,7 @@ renderer.setAnimationLoop(() => {
   if (fpsT > 0.5) { fpsEl.textContent = `${Math.round(frames / fpsT)} fps`; frames = 0; fpsT = 0; }
 });
 
-window.game = { scene, camera, player, renderer, forest, weapons, enemies, heightAt };  // handy for debugging in the console
+window.game = { scene, camera, player, renderer, forest, weapons, enemies, drones, heightAt };  // handy for debugging in the console
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
